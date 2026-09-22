@@ -277,13 +277,11 @@ body {
 /* --- Virtual joystick --------------------------------------------------- */
 
 /* Floating: a large catch area, with the stick drawn wherever the thumb lands.
-   It sits underneath every interactive overlay so it never steals their taps. */
+   It sits underneath every interactive overlay so it never steals their taps, and covers
+   the whole screen so it works no matter how large or oddly-shaped the viewport is. */
 .joystick-zone {
   position: absolute;
-  left: 0;
-  bottom: 0;
-  width: 60%;
-  height: 72%;
+  inset: 0;
   touch-action: none;
   z-index: 1;
 }
