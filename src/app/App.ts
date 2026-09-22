@@ -15,7 +15,7 @@ import { buildIceConfiguration, debugConditions } from '../networking/iceConfig'
 import { fromCandidate, fromDescription, toCandidate, toDescription } from '../networking/sdp';
 import type { ConnectionState } from '../networking/transport/Transport';
 import { WebRTCConnection } from '../networking/transport/WebRTCConnection';
-import { buildInviteUrl, parseJoinPath } from '../room/InviteLink';
+import { basePath, buildInviteUrl, parseJoinPath } from '../room/InviteLink';
 import { ConnectionIndicator } from '../ui/ConnectionIndicator';
 import { DebugOverlay, botCount, isDebugEnabled } from '../ui/DebugOverlay';
 import { FullscreenButton } from '../ui/FullscreenButton';
@@ -42,7 +42,11 @@ export class App {
   ) {}
 
   start(): void {
-    const roomId = parseJoinPath(window.location.pathname);
+    const base = basePath();
+    const pathname = window.location.pathname.startsWith(base)
+      ? window.location.pathname.slice(base.length)
+      : window.location.pathname;
+    const roomId = parseJoinPath(pathname);
     if (roomId) this.showJoin(roomId);
     else this.showHome();
   }
@@ -51,7 +55,7 @@ export class App {
 
   private showHome(): void {
     this.reset();
-    history.replaceState(null, '', `/${window.location.search}`);
+    history.replaceState(null, '', `${basePath()}/${window.location.search}`);
     renderHomeScreen(this.uiRoot, { onCreateGame: () => void this.hostGame() });
   }
 
@@ -174,9 +178,9 @@ export class App {
 
     clear(this.uiRoot);
 
-    const inviteUrl = buildInviteUrl(roomId, window.location.origin);
+    const inviteUrl = buildInviteUrl(roomId, `${window.location.origin}${basePath()}`);
     // Keep any ?debug=1 / ?bots=N flags alive across the rewrite.
-    history.replaceState(null, '', `/join/${roomId}${window.location.search}`);
+    history.replaceState(null, '', `${basePath()}/join/${roomId}${window.location.search}`);
 
     share = new ShareOverlay(this.uiRoot, inviteUrl);
     share.setPlayerCount(host.playerCount);

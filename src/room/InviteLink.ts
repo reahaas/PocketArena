@@ -2,6 +2,14 @@ import { isValidRoomId } from '../networking/SignalingProtocol';
 
 export const JOIN_PATH_PREFIX = '/join/';
 
+/**
+ * Repo subpath the client is served from (e.g. '/PocketArena' on GitHub Pages),
+ * with no trailing slash. Empty string when served from the domain root.
+ */
+export function basePath(): string {
+  return import.meta.env.BASE_URL.replace(/\/$/, '');
+}
+
 export function buildInviteUrl(roomId: string, origin: string): string {
   return `${origin.replace(/\/$/, '')}${JOIN_PATH_PREFIX}${roomId}`;
 }

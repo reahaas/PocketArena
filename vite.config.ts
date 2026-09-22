@@ -9,6 +9,9 @@ const proxy = {
 };
 
 export default defineConfig({
+  // Set only for the GitHub Pages build, which is served from a repo subpath
+  // (e.g. /PocketArena/) rather than the domain root.
+  base: process.env.BASE_PATH || '/',
   // 'spa' makes the dev server serve index.html for /join/:gameId.
   appType: 'spa',
   server: {
