@@ -1,10 +1,13 @@
 import { SIGNALING_URL } from '../config/config';
 import {
+  DEFAULT_SPORT,
   INPUT_INTERVAL_MS,
   MAX_CATCHUP_TICKS,
   SIM_TICK_MS,
 } from '../config/constants';
+import type { SportType } from '../config/constants';
 import { BotSwarm } from '../dev/Bots';
+import type { Game } from '../game/Game';
 import { GameLoop } from '../game/GameLoop';
 import type { GameSession } from '../game/RenderPlayer';
 import { InputManager } from '../input/InputManager';
@@ -22,6 +25,8 @@ import { FullscreenButton } from '../ui/FullscreenButton';
 import { renderHomeScreen } from '../ui/HomeScreen';
 import { renderConnecting, renderJoinScreen } from '../ui/JoinGameScreen';
 import { renderMessageScreen } from '../ui/MessageScreen';
+import { SettingsButton } from '../ui/SettingsButton';
+import { SettingsPane } from '../ui/SettingsPane';
 import { ShareOverlay } from '../ui/ShareOverlay';
 import { clear, el } from '../ui/dom';
 import { ScreenWakeLock } from '../utils/wakeLock';
@@ -188,6 +193,30 @@ export class App {
     const indicator = new ConnectionIndicator(this.uiRoot);
     indicator.set('CONNECTED');
 
+    // Only the host chooses the field; the choice is broadcast to every connected player.
+    let sport: SportType = DEFAULT_SPORT;
+    let gameInstance: Game | null = null;
+    let settingsPane: SettingsPane | null = null;
+    const closeSettings = (): void => {
+      settingsPane?.destroy();
+      settingsPane = null;
+    };
+    const settingsButton = new SettingsButton(this.uiRoot, () => {
+      if (settingsPane) {
+        closeSettings();
+        return;
+      }
+      settingsPane = new SettingsPane(this.uiRoot, sport, {
+        onSelect: (next) => {
+          sport = next;
+          host.setSport(next);
+          gameInstance?.setSport(next);
+          settingsPane?.setActive(next);
+        },
+        onClose: closeSettings,
+      });
+    });
+
     const wakeLock = new ScreenWakeLock();
     void wakeLock.acquire();
 
@@ -210,6 +239,8 @@ export class App {
       () => wakeLock.destroy(),
       () => share?.destroy(),
       () => indicator.destroy(),
+      () => closeSettings(),
+      () => settingsButton.destroy(),
       () => {
         for (const connection of connections.values()) connection.close();
       },
@@ -219,6 +250,10 @@ export class App {
 
     await this.runGame(host, {
       role: 'host',
+      initialSport: sport,
+      onGameReady: (game) => {
+        gameInstance = game;
+      },
       onTick: (_dt, now) => host.step(now),
       onFrame: (now) => {
         host.afterFrame(now);
@@ -280,6 +315,8 @@ export class App {
     let connectionState: ConnectionState = 'CONNECTING';
     // Signaling can only hint that the host left; the peer connection is what proves it.
     let hostLeftSignaling = false;
+    let sport: SportType = DEFAULT_SPORT;
+    let gameInstance: Game | null = null;
 
     const client = new NetworkClient(connection, {
       onConnectionState: (state) => {
@@ -294,11 +331,17 @@ export class App {
       onRejected: () => {
         this.showMessage('Game is full', 'This game already has the maximum number of players.');
       },
+      onSportChange: (next) => {
+        sport = next;
+        gameInstance?.setSport(next);
+      },
       onReady: () => {
         if (started) return;
         started = true;
         clearTimeout(timeout);
-        void this.startClientGame(client, roomId, () => connectionState, connection);
+        void this.startClientGame(client, roomId, () => connectionState, connection, sport, (game) => {
+          gameInstance = game;
+        });
       },
     });
 
@@ -351,6 +394,8 @@ export class App {
     roomId: string,
     connectionState: () => ConnectionState,
     connection: WebRTCConnection,
+    initialSport: SportType,
+    onGameReady: (game: Game) => void,
   ): Promise<void> {
     clear(this.uiRoot);
 
@@ -361,6 +406,8 @@ export class App {
 
     await this.runGame(client, {
       role: 'client',
+      initialSport,
+      onGameReady,
       onTick: () => {},
       onFrame: (now) => {
         client.afterFrame(now);
@@ -389,6 +436,8 @@ export class App {
     session: GameSession,
     options: {
       role: 'host' | 'client';
+      initialSport?: SportType;
+      onGameReady?: (game: Game) => void;
       onTick: (dt: number, nowMs: number) => void;
       onFrame: (nowMs: number) => void;
       stats: () => {
@@ -409,10 +458,13 @@ export class App {
     this.uiRoot.append(rotateHint);
 
     // Phaser is only pulled in once a game actually starts, so the entry screens paint instantly.
-    const { Game } = await import('../game/Game');
-    const game = new Game(this.gameRoot, {
-      renderPlayers: (nowMs) => session.renderPlayers(nowMs),
-    });
+    const { Game: GameClass } = await import('../game/Game');
+    const game = new GameClass(
+      this.gameRoot,
+      { renderPlayers: (nowMs) => session.renderPlayers(nowMs) },
+      options.initialSport,
+    );
+    options.onGameReady?.(game);
 
     const fullscreen = game.isFullscreenSupported
       ? new FullscreenButton(this.uiRoot, () => game.toggleFullscreen())

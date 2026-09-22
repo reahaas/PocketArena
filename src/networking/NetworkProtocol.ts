@@ -1,4 +1,5 @@
-import { MAX_INPUT_DT, MAX_PLAYERS } from '../config/constants';
+import { MAX_INPUT_DT, MAX_PLAYERS, SPORTS } from '../config/constants';
+import type { SportType } from '../config/constants';
 import type { PlayerState } from '../game/types';
 import { clamp, sanitizeNumber } from '../utils/math';
 
@@ -21,11 +22,13 @@ export type HostMessage =
       tick: number;
       serverTimeMs: number;
       players: NetPlayer[];
+      sport: SportType;
     }
   | { type: 'state'; tick: number; serverTimeMs: number; players: NetPlayer[] }
   | { type: 'playerJoined'; player: NetPlayer }
   | { type: 'playerLeft'; playerId: string }
   | { type: 'paused'; paused: boolean }
+  | { type: 'sport'; sport: SportType }
   | { type: 'rejected'; reason: 'full' }
   | { type: 'pong'; t: number };
 
@@ -56,6 +59,12 @@ function parseSequence(value: unknown): number | null {
   const n = sanitizeNumber(value, -1);
   if (!Number.isInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) return null;
   return n;
+}
+
+function parseSport(value: unknown): SportType | null {
+  return typeof value === 'string' && (SPORTS as string[]).includes(value)
+    ? (value as SportType)
+    : null;
 }
 
 function parseNetPlayer(value: unknown): NetPlayer | null {
@@ -117,7 +126,8 @@ export function parseHostMessage(value: unknown): HostMessage | null {
     case 'welcome': {
       const players = parsePlayerList(value.players);
       const slot = sanitizeNumber(value.slot, -1);
-      if (!players || typeof value.playerId !== 'string') return null;
+      const sport = parseSport(value.sport);
+      if (!players || typeof value.playerId !== 'string' || !sport) return null;
       if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_PLAYERS) return null;
       return {
         type: 'welcome',
@@ -126,6 +136,7 @@ export function parseHostMessage(value: unknown): HostMessage | null {
         tick: Math.max(0, Math.trunc(sanitizeNumber(value.tick))),
         serverTimeMs: sanitizeNumber(value.serverTimeMs),
         players,
+        sport,
       };
     }
     case 'state': {
@@ -148,6 +159,10 @@ export function parseHostMessage(value: unknown): HostMessage | null {
         : null;
     case 'paused':
       return { type: 'paused', paused: value.paused === true };
+    case 'sport': {
+      const sport = parseSport(value.sport);
+      return sport ? { type: 'sport', sport } : null;
+    }
     case 'rejected':
       return value.reason === 'full' ? { type: 'rejected', reason: 'full' } : null;
     case 'pong':

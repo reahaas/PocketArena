@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 
-import { ARENA_HEIGHT, ARENA_WIDTH } from '../config/constants';
+import { ARENA_HEIGHT, ARENA_WIDTH, DEFAULT_SPORT } from '../config/constants';
+import type { SportType } from '../config/constants';
 import { watchViewport } from '../utils/viewport';
 import { GameScene, type SceneBridge } from './GameScene';
 
@@ -9,8 +10,9 @@ export class Game {
   private readonly scene = new GameScene();
   private readonly stopWatchingViewport: () => void;
 
-  constructor(parent: HTMLElement, bridge: SceneBridge) {
+  constructor(parent: HTMLElement, bridge: SceneBridge, initialSport: SportType = DEFAULT_SPORT) {
     this.scene.setBridge(bridge);
+    this.scene.setSport(initialSport);
 
     this.game = new Phaser.Game({
       type: Phaser.AUTO,
@@ -47,6 +49,11 @@ export class Game {
   cameraScroll(): { x: number; y: number } {
     const camera = this.scene.cameras?.main;
     return { x: camera?.scrollX ?? 0, y: camera?.scrollY ?? 0 };
+  }
+
+  /** Swaps the field/court/pool markings without rebuilding the game or losing player state. */
+  setSport(sport: SportType): void {
+    this.scene.setSport(sport);
   }
 
   get isFullscreenSupported(): boolean {

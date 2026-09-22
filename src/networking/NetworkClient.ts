@@ -1,4 +1,5 @@
-import { INTERP_DELAY_MS, PING_INTERVAL_MS } from '../config/constants';
+import { DEFAULT_SPORT, INTERP_DELAY_MS, PING_INTERVAL_MS } from '../config/constants';
+import type { SportType } from '../config/constants';
 import type { GameSession, RenderPlayer } from '../game/RenderPlayer';
 import type { PlayerId, PlayerState, Vector2 } from '../game/types';
 import { RemoteInterpolator, ServerClock } from './Interpolation';
@@ -19,6 +20,7 @@ export interface NetworkClientEvents {
   onRejected?: (reason: 'full') => void;
   onPlayerCountChange?: (count: number) => void;
   onPaused?: (paused: boolean) => void;
+  onSportChange?: (sport: SportType) => void;
   onConnectionState?: (state: ConnectionState) => void;
 }
 
@@ -39,6 +41,7 @@ export class NetworkClient implements GameSession {
   private rttMs = 0;
   private ready = false;
   private paused = false;
+  private sport: SportType = DEFAULT_SPORT;
   private snapshotsReceived = 0;
   private lastAck = 0;
   private hostTick = 0;
@@ -76,6 +79,10 @@ export class NetworkClient implements GameSession {
 
   get isPaused(): boolean {
     return this.paused;
+  }
+
+  get currentSport(): SportType {
+    return this.sport;
   }
 
   get pendingInputCount(): number {
@@ -174,6 +181,8 @@ export class NetworkClient implements GameSession {
         this.playerId = message.playerId;
         this.slot = message.slot;
         this.serverClock.sync(message.serverTimeMs, now);
+        this.sport = message.sport;
+        this.events.onSportChange?.(message.sport);
 
         const self = message.players.find((p) => p.id === message.playerId);
         this.prediction = new Prediction(self ?? this.fallbackState(message.playerId, message.slot));
@@ -221,6 +230,11 @@ export class NetworkClient implements GameSession {
       case 'paused':
         this.paused = message.paused;
         this.events.onPaused?.(message.paused);
+        return;
+
+      case 'sport':
+        this.sport = message.sport;
+        this.events.onSportChange?.(message.sport);
         return;
 
       case 'rejected':

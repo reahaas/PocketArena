@@ -63,3 +63,14 @@ export const WS_HEARTBEAT_MS = 15_000;
 export const ROOM_ID_LENGTH = 6;
 /** Crockford base32 with ambiguous characters (I, L, O, U) removed. */
 export const ROOM_ID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+// --- Sports / field ------------------------------------------------------
+/** Only the host may change this; it is broadcast to every connected player (spec §5). */
+export type SportType = 'soccer' | 'basketball' | 'waterpolo';
+export const SPORTS: SportType[] = ['soccer', 'basketball', 'waterpolo'];
+export const DEFAULT_SPORT: SportType = 'soccer';
+export const SPORT_LABELS: Record<SportType, string> = {
+  soccer: 'SOCCER',
+  basketball: 'BASKETBALL',
+  waterpolo: 'WATER POLO',
+};

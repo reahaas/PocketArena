@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 
+import { DEFAULT_SPORT } from '../config/constants';
+import type { SportType } from '../config/constants';
 import { Arena } from './Arena';
 import { PlayerManager } from './PlayerManager';
 import type { RenderPlayer } from './RenderPlayer';
@@ -10,7 +12,9 @@ export interface SceneBridge {
 
 export class GameScene extends Phaser.Scene {
   private players!: PlayerManager;
+  private arena: Arena | null = null;
   private bridge: SceneBridge | null = null;
+  private pendingSport: SportType = DEFAULT_SPORT;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -20,8 +24,15 @@ export class GameScene extends Phaser.Scene {
     this.bridge = bridge;
   }
 
+  /** Safe to call before the scene finishes booting; applied immediately once it has. */
+  setSport(sport: SportType): void {
+    this.pendingSport = sport;
+    this.arena?.setSport(sport);
+  }
+
   create(): void {
-    new Arena(this);
+    this.arena = new Arena(this);
+    this.arena.setSport(this.pendingSport);
     this.players = new PlayerManager(this);
     this.cameras.main.setBackgroundColor('#020617');
   }

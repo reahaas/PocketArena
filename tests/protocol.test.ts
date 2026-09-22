@@ -77,11 +77,20 @@ describe('host message validation', () => {
 
   it('round-trips every host message type', () => {
     const messages: HostMessage[] = [
-      { type: 'welcome', playerId: 'a', slot: 0, tick: 1, serverTimeMs: 10, players: [player] },
+      {
+        type: 'welcome',
+        playerId: 'a',
+        slot: 0,
+        tick: 1,
+        serverTimeMs: 10,
+        players: [player],
+        sport: 'soccer',
+      },
       { type: 'state', tick: 2, serverTimeMs: 20, players: [player] },
       { type: 'playerJoined', player },
       { type: 'playerLeft', playerId: 'a' },
       { type: 'paused', paused: true },
+      { type: 'sport', sport: 'waterpolo' },
       { type: 'rejected', reason: 'full' },
       { type: 'pong', t: 123 },
     ];
@@ -114,6 +123,22 @@ describe('host message validation', () => {
 
   it('rejects an unknown rejection reason', () => {
     expect(parseHostMessage({ type: 'rejected', reason: 'because' })).toBeNull();
+  });
+
+  it('rejects a welcome with an unrecognised sport, and a sport message with none at all', () => {
+    expect(
+      parseHostMessage({
+        type: 'welcome',
+        playerId: 'a',
+        slot: 0,
+        tick: 1,
+        serverTimeMs: 1,
+        players: [player],
+        sport: 'cricket',
+      }),
+    ).toBeNull();
+    expect(parseHostMessage({ type: 'sport', sport: 'cricket' })).toBeNull();
+    expect(parseHostMessage({ type: 'sport' })).toBeNull();
   });
 });
 

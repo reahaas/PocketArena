@@ -1,10 +1,12 @@
 import {
   DISCONNECT_TIMEOUT_MS,
+  DEFAULT_SPORT,
   EXTRAP_MAX_MS,
   MAX_INPUTS_PER_TICK,
   MAX_PLAYERS,
   SNAPSHOT_INTERVAL_MS,
 } from '../config/constants';
+import type { SportType } from '../config/constants';
 import { GameSimulation } from '../game/GameSimulation';
 import type { GameSession, RenderPlayer } from '../game/RenderPlayer';
 import { spawnPointForSlot } from '../game/SpawnPoints';
@@ -56,11 +58,14 @@ export class NetworkHost implements GameSession {
   private lastBroadcastMs = 0;
   private paused = false;
   private snapshotsSent = 0;
+  private sport: SportType;
 
   constructor(
     private readonly events: NetworkHostEvents = {},
     private readonly now: Clock = () => performance.now(),
+    initialSport: SportType = DEFAULT_SPORT,
   ) {
+    this.sport = initialSport;
     const playerId = generatePlayerId();
     const spawn = spawnPointForSlot(0);
 
@@ -100,6 +105,17 @@ export class NetworkHost implements GameSession {
 
   get snapshotCount(): number {
     return this.snapshotsSent;
+  }
+
+  get currentSport(): SportType {
+    return this.sport;
+  }
+
+  /** Only the host may change the field; every connected player is told immediately. */
+  setSport(sport: SportType): void {
+    if (this.sport === sport) return;
+    this.sport = sport;
+    this.broadcast({ type: 'sport', sport });
   }
 
   /** Authoritative state for a player, for tests and debug tooling. */
@@ -151,6 +167,7 @@ export class NetworkHost implements GameSession {
       tick: this.tick,
       serverTimeMs: nowMs,
       players: this.netPlayers(),
+      sport: this.sport,
     });
 
     // A peer that joins while we are backgrounded must learn that immediately.
