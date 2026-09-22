@@ -1,0 +1,16 @@
+node_modules
+dist
+coverage
+.git
+.env
+.env.*
+!.env.example
+tests
+plan
+e2e
+playwright-report
+test-results
+*.log
+.DS_Store
+README.md
+SystemDescription.txt

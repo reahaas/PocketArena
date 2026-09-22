@@ -1,0 +1,14 @@
+services:
+  # One process serves the client and the signaling socket on the same port,
+  # so there is nothing to configure per environment and no proxy in between.
+  pocket-arena:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      PORT: 8080
+      STATIC_DIR: /app/dist
+      ALLOWED_ORIGINS: http://localhost:8080
+    ports:
+      - '8080:8080'
+    restart: unless-stopped

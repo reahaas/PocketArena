@@ -1,0 +1,332 @@
+:root {
+  --bg: #020617;
+  --panel: #0f172a;
+  --accent: #38bdf8;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  /* Mobile interaction rules: no scroll, no zoom, no accidental selection (spec §20). */
+  overscroll-behavior: none;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  /* dvh tracks the viewport as mobile browser chrome expands and collapses. */
+  height: 100dvh;
+  width: 100vw;
+}
+
+#game-root,
+#ui-root {
+  position: fixed;
+  inset: 0;
+}
+
+#game-root {
+  z-index: 0;
+}
+
+#ui-root {
+  z-index: 10;
+  pointer-events: none;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
+
+#ui-root > * {
+  pointer-events: auto;
+}
+
+/* --- Full-screen panels ------------------------------------------------ */
+
+.panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 2rem 1.5rem;
+  background: var(--bg);
+  text-align: center;
+  z-index: 4;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(2rem, 9vw, 3.5rem);
+  letter-spacing: 0.15em;
+  font-weight: 800;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  font-size: 0.95rem;
+}
+
+.primary-button,
+.secondary-button,
+.text-button {
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  border-radius: 999px;
+  cursor: pointer;
+  min-height: 56px;
+  padding: 0 2rem;
+  transition: transform 0.05s ease;
+}
+
+.primary-button:active,
+.secondary-button:active {
+  transform: scale(0.97);
+}
+
+.primary-button {
+  background: var(--accent);
+  color: #04263a;
+  border: none;
+}
+
+.secondary-button {
+  background: transparent;
+  color: var(--accent);
+  border: 2px solid var(--accent);
+}
+
+.text-button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  text-decoration: underline;
+  min-height: 44px;
+}
+
+/* --- In-game overlays -------------------------------------------------- */
+
+.share-overlay {
+  position: absolute;
+  left: 50%;
+  top: 1rem;
+  transform: translateX(-50%);
+  width: min(92vw, 26rem);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 1.25rem;
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid #1e293b;
+  z-index: 3;
+}
+
+.share-overlay.hidden {
+  display: none;
+}
+
+.share-title {
+  margin: 0;
+  letter-spacing: 0.12em;
+  font-size: 1.1rem;
+}
+
+.share-link {
+  margin: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.share-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.share-count,
+.share-status {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  min-height: 1.1em;
+}
+
+.connection-indicator {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.8);
+  font-size: 0.75rem;
+  color: var(--muted);
+  z-index: 3;
+}
+
+.connection-indicator[data-state='connected'] {
+  color: #4ade80;
+}
+
+.connection-indicator[data-state='failed'],
+.connection-indicator[data-state='disconnected'] {
+  color: #f87171;
+}
+
+.connection-indicator[data-state='paused'] {
+  color: #fbbf24;
+}
+
+.connection-indicator.is-actionable {
+  cursor: pointer;
+  border: 1px solid currentColor;
+  font-weight: 700;
+}
+
+/* Nudge portrait phones to turn sideways, where the board fills far more of the screen. */
+.rotate-hint {
+  position: absolute;
+  left: 50%;
+  bottom: calc(1rem + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.85);
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  pointer-events: none;
+  display: none;
+}
+
+@media (orientation: portrait) and (pointer: coarse) {
+  .rotate-hint {
+    display: block;
+  }
+}
+
+.debug-overlay {
+  position: absolute;
+  top: 3rem;
+  left: 0.75rem;
+  margin: 0;
+  padding: 0.6rem 0.8rem;
+  border-radius: 0.5rem;
+  background: rgba(2, 6, 23, 0.85);
+  border: 1px solid #1e293b;
+  font-family: ui-monospace, monospace;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  color: #7dd3fc;
+  pointer-events: none;
+}
+
+.fullscreen-button {
+  position: absolute;
+  top: calc(0.75rem + env(safe-area-inset-top));
+  right: calc(0.75rem + env(safe-area-inset-right));
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
+  border-radius: 0.6rem;
+  border: 1px solid #1e293b;
+  background: rgba(15, 23, 42, 0.8);
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 3;
+}
+
+.fullscreen-button.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Keep the connection pill clear of the fullscreen control. */
+.connection-indicator {
+  right: calc(4rem + env(safe-area-inset-right));
+}
+
+/* --- Virtual joystick --------------------------------------------------- */
+
+/* Floating: a large catch area, with the stick drawn wherever the thumb lands.
+   It sits underneath every interactive overlay so it never steals their taps. */
+.joystick-zone {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 60%;
+  height: 72%;
+  touch-action: none;
+  z-index: 1;
+}
+
+.joystick-base {
+  position: absolute;
+  left: calc(2.5rem + env(safe-area-inset-left));
+  top: auto;
+  bottom: calc(2.5rem + env(safe-area-inset-bottom));
+  width: 120px;
+  height: 120px;
+  margin: -60px 0 0 -60px;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.12);
+  border: 2px solid rgba(148, 163, 184, 0.3);
+  opacity: 0.45;
+  transition: opacity 0.15s ease;
+}
+
+/* Once engaged the stick is positioned from JS, so drop the resting anchor. */
+.joystick-zone.is-engaged .joystick-base {
+  bottom: auto;
+  opacity: 1;
+}
+
+.joystick-thumb {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(56, 189, 248, 0.65);
+  transform: translate(-50%, -50%);
+}
+
+/* A touch device gets the floating stick only, with no resting ghost in the corner. */
+@media (pointer: coarse) {
+  .joystick-base {
+    opacity: 0;
+  }
+
+  .joystick-zone.is-engaged .joystick-base {
+    opacity: 1;
+  }
+}

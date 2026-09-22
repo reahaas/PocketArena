@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: pocket-arena
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      # Set this to your real Render URL after the first deploy (e.g. https://pocket-arena.onrender.com)
+      # so the signaling server enforces same-origin WebSocket connections. Leave blank only for testing.
+      - key: ALLOWED_ORIGINS
+        value: ""

@@ -1,0 +1,1444 @@
+Pocket Arena — Production MVP Engineering Specification
+
+You are a senior multiplayer game engineer, full-stack engineer, and product engineer.
+
+Build a complete, production-quality MVP of a mobile-first browser multiplayer game called Pocket Arena.
+
+The game is designed for groups of people who are physically together, typically sharing a WhatsApp group. A host creates a game and shares a single invite link in WhatsApp. Up to 20 players can join the same game.
+
+The MVP intentionally contains only:
+
+- A 2D arena
+- Up to 20 players
+- A virtual joystick
+- Smooth player movement
+- Invite-by-link joining
+- Peer-to-peer WebRTC networking
+- Host-authoritative simulation
+
+There are no weapons, enemies, scoring, accounts, matchmaking, database, lobby, or persistent game state.
+
+The objective is to build a technically strong multiplayer foundation that can later support real game mechanics.
+
+---
+
+1. PRODUCT EXPERIENCE
+
+The product must feel extremely simple.
+
+Host flow
+
+The host opens the website.
+
+They see:
+
+POCKET ARENA
+
+CREATE GAME
+
+They press Create Game.
+
+The application:
+
+1. Creates a game.
+2. Generates a unique game ID.
+3. Connects to the signaling service.
+4. Creates the host's WebRTC infrastructure.
+5. Generates an invite URL.
+6. Opens a simple sharing UI.
+7. Provides a Share button using the Web Share API when available.
+8. Provides Copy Link as a fallback.
+
+Example:
+
+"https://game.example.com/join/ABC123"
+
+The intended UX is:
+
+Create Game → Share to WhatsApp → Friends click → They join automatically.
+
+There must be no traditional lobby.
+
+---
+
+2. PLAYER JOIN FLOW
+
+A player receives the link in WhatsApp.
+
+They click:
+
+"https://game.example.com/join/ABC123"
+
+The browser opens the game.
+
+The player sees:
+
+JOIN GAME
+
+They press the button.
+
+The application:
+
+1. Connects to the signaling service.
+2. Validates the game ID.
+3. Establishes a WebRTC connection to the host.
+4. Performs the WebRTC handshake.
+5. Assigns the player a unique player ID.
+6. Receives the current game state.
+7. Starts the game.
+
+The player should not need to:
+
+- enter a room code
+- enter a name
+- scan a QR code
+- select a server
+- find a lobby
+- configure networking
+
+The desired experience is:
+
+Click link → Join → Play.
+
+---
+
+3. PLAYER LIMIT
+
+Support up to 20 concurrent players per game.
+
+The architecture must be designed for 20 players from the beginning.
+
+Do NOT implement a 2-player architecture and assume it will scale later.
+
+The room must reject player 21 gracefully.
+
+Display:
+
+Game is full
+
+---
+
+4. NETWORK ARCHITECTURE
+
+Use:
+
+- WebRTC DataChannels for gameplay
+- A minimal WebSocket signaling server for connection establishment
+- No game server
+- No database
+- No persistent room state
+
+The topology is:
+
+                         Signaling Server
+                         /    |    \
+                        /     |     \
+                     setup  setup   setup
+                      /       |       \
+                    Host     Player   Player
+                              \       /
+                               \     /
+                                etc.
+
+After connection establishment:
+
+                         HOST
+                    authoritative
+                         |
+          ┌──────────────┼──────────────┐
+          │              │              │
+          ▼              ▼              ▼
+        Player 2       Player 3       Player 4
+          │
+         ...
+          │
+        Player 20
+
+Each non-host player has exactly one gameplay WebRTC connection:
+
+Player ↔ Host
+
+Do NOT implement full-mesh networking.
+
+Do NOT create 20 × 19 peer connections.
+
+The host is authoritative.
+
+---
+
+5. HOST AUTHORITY
+
+The host is responsible for the authoritative simulation.
+
+Clients send INPUT.
+
+Clients must not be trusted to directly set their authoritative position.
+
+Example:
+
+Client:
+
+joystick = (0.8, -0.2)
+
+        ↓
+
+WebRTC
+
+        ↓
+
+Host:
+
+simulation.update(player, input, deltaTime)
+
+        ↓
+
+Authoritative state
+
+The host periodically broadcasts authoritative state to clients.
+
+The authoritative state contains the state necessary to reconstruct the visible game.
+
+---
+
+6. SIGNALLING SERVER
+
+The signaling server is intentionally tiny.
+
+It exists only to establish WebRTC connections.
+
+It may:
+
+- create temporary rooms
+- register the host
+- accept players
+- forward SDP offers
+- forward SDP answers
+- forward ICE candidates
+- notify peers about connection/disconnection
+- reject player 21
+- remove empty rooms
+
+It must NOT:
+
+- simulate the game
+- receive joystick inputs
+- receive player positions during gameplay
+- broadcast gameplay state
+- persist rooms
+- persist players
+- maintain a database
+
+Once WebRTC connections are established, gameplay traffic bypasses the signaling server.
+
+Room state exists only in server memory.
+
+---
+
+7. WEBRTC
+
+Use:
+
+"RTCPeerConnection"
+
+and:
+
+"RTCDataChannel"
+
+Use one reliable ordered DataChannel for the MVP.
+
+Configuration must support:
+
+- STUN servers
+- future TURN configuration
+
+STUN configuration must be environment configurable.
+
+Example environment variable:
+
+"VITE_STUN_SERVERS"
+
+Do not hard-code network assumptions into gameplay code.
+
+Create an abstraction such as:
+
+WebRTCConnection
+
+with responsibilities including:
+
+- create connection
+- create offer
+- accept offer
+- create answer
+- accept answer
+- exchange ICE candidates
+- open DataChannel
+- send messages
+- receive messages
+- detect disconnection
+- close connection
+
+Do not expose raw WebRTC APIs throughout the game code.
+
+---
+
+8. NETWORK PROTOCOL
+
+Define all network messages as explicit TypeScript discriminated unions.
+
+Example:
+
+type ClientMessage =
+  | {
+      type: "join";
+      playerId: string;
+    }
+  | {
+      type: "input";
+      sequence: number;
+      x: number;
+      y: number;
+      timestamp: number;
+    };
+
+type HostMessage =
+  | {
+      type: "welcome";
+      playerId: string;
+      tick: number;
+    }
+  | {
+      type: "state";
+      tick: number;
+      lastProcessedInput: number;
+      players: PlayerState[];
+    }
+  | {
+      type: "playerJoined";
+      player: PlayerState;
+    }
+  | {
+      type: "playerLeft";
+      playerId: string;
+    }
+  | {
+      type: "gameStarted";
+    };
+
+Centralize:
+
+- serialization
+- deserialization
+- validation
+
+Reject malformed messages.
+
+Clamp all numeric values.
+
+Never trust remote input.
+
+---
+
+9. PLAYER INPUT
+
+The client sends joystick INPUT, not authoritative position.
+
+Input format:
+
+x: -1..1
+y: -1..1
+
+The input must be normalized.
+
+Diagonal movement must not produce greater speed.
+
+Each input has a monotonically increasing sequence number:
+
+1
+2
+3
+4
+...
+
+The client should send inputs at a controlled network rate.
+
+Target:
+
+20 input updates per second.
+
+Rendering remains independent at approximately 60 FPS.
+
+Do not send one network packet per render frame.
+
+---
+
+10. CLIENT-SIDE PREDICTION
+
+The local player must respond immediately to joystick input.
+
+Do NOT wait for the host.
+
+When the local player moves:
+
+Joystick
+   ↓
+Local simulation
+   ↓
+Immediate render
+   ↓
+Send input to host
+
+The local client predicts its movement locally.
+
+This eliminates perceived network latency.
+
+---
+
+11. RECONCILIATION
+
+The host periodically sends authoritative state.
+
+The state must include the latest processed input sequence number for the local player.
+
+Example:
+
+Host:
+
+lastProcessedInput = 153
+authoritativePosition = (400, 200)
+
+The client then:
+
+1. Applies the authoritative position.
+2. Removes acknowledged inputs.
+3. Replays unacknowledged local inputs.
+4. Continues prediction.
+
+Example:
+
+Local inputs:
+
+151
+152
+153
+154
+155
+156
+
+Host acknowledges:
+
+153
+
+Client:
+
+apply authoritative state
+replay 154
+replay 155
+replay 156
+
+This is required to keep local movement responsive while maintaining host authority.
+
+---
+
+12. REMOTE PLAYER INTERPOLATION
+
+Remote players must not visually jump between network updates.
+
+The host may broadcast state at approximately:
+
+20 Hz
+
+The game renders at approximately:
+
+60 FPS
+
+Maintain previous and target states for remote players.
+
+Interpolate visually between them.
+
+Example:
+
+Network:
+
+100 ---- 110 ---- 120
+
+Rendering:
+
+100
+103
+106
+110
+113
+116
+120
+
+Remote players should appear to move continuously.
+
+---
+
+13. DEAD RECKONING
+
+For remote players, use their most recent known:
+
+- position
+- velocity
+- input/direction where available
+
+to estimate their position between network updates.
+
+If a network update is delayed by a small amount, continue the last known movement rather than freezing the player.
+
+When new authoritative state arrives, smoothly correct the prediction.
+
+Avoid visible teleportation for small corrections.
+
+Large corrections may be snapped if necessary.
+
+---
+
+14. GAME SIMULATION
+
+The simulation must be deterministic and frame-rate independent where practical.
+
+Player state:
+
+PlayerState {
+    id
+    x
+    y
+    vx
+    vy
+}
+
+Movement:
+
+velocity = normalizedInput * speed
+
+position += velocity * deltaTime
+
+Use a fixed/configurable movement speed.
+
+Clamp the player inside the arena.
+
+The simulation must not depend on render FPS.
+
+---
+
+15. SIMULATION TICK
+
+The host should maintain an authoritative simulation tick.
+
+Target:
+
+20-30 simulation ticks per second
+
+Rendering remains approximately:
+
+60 FPS
+
+Separate:
+
+- simulation
+- networking
+- rendering
+
+Do not couple game simulation directly to Phaser's render loop.
+
+---
+
+16. PLAYER COUNT
+
+The host must maintain:
+
+players: Map<PlayerId, Player>
+
+Maximum:
+
+20
+
+Player IDs must be unique and cryptographically random.
+
+Players should receive stable IDs for the duration of the game.
+
+---
+
+17. PLAYER VISUALS
+
+Use Phaser graphics primitives.
+
+No external art assets are required.
+
+Each player is a simple circle.
+
+Use a deterministic palette of up to 20 visually distinguishable colors.
+
+Each player displays a small player number or generated short identifier above their character.
+
+Example:
+
+     P7
+     🔵
+
+The local player should be visually distinguishable.
+
+---
+
+18. ARENA
+
+Create a simple 2D arena.
+
+The arena should be larger than the screen if useful.
+
+Support:
+
+- responsive viewport
+- camera
+- player boundary collision
+
+The arena should work in:
+
+- portrait
+- landscape
+- desktop
+
+No complex level system is required yet.
+
+Keep the architecture ready for future maps.
+
+---
+
+19. VIRTUAL JOYSTICK
+
+Create a custom virtual joystick.
+
+Requirements:
+
+- touch support
+- pointer events
+- mouse support for desktop
+- large touch target
+- bottom-left placement
+- circular base
+- draggable thumb
+- normalized output
+- dead zone
+- correct diagonal normalization
+- multitouch-safe
+- pointer ID tracking
+
+The joystick must not steal unrelated touches.
+
+The game should support:
+
+- joystick touch
+- other future UI touches
+
+simultaneously.
+
+Use appropriate:
+
+touch-action: none;
+
+and related mobile interaction rules.
+
+---
+
+20. MOBILE FIRST
+
+Primary targets:
+
+- iOS Safari
+- Android Chrome
+
+Secondary target:
+
+- desktop Chrome
+
+Requirements:
+
+- fullscreen-like viewport
+- no page scrolling
+- no accidental text selection
+- safe-area support
+- correct viewport resizing
+- orientation changes
+- mobile browser UI changes
+- responsive Phaser canvas
+
+Use modern mobile viewport handling.
+
+Do not rely solely on:
+
+window.innerHeight
+
+because mobile browser UI can dynamically change viewport dimensions.
+
+---
+
+21. DESKTOP DEVELOPMENT CONTROLS
+
+For development/testing, support:
+
+- WASD
+- arrow keys
+- mouse interaction with joystick
+
+Keyboard support must be implemented as an input source feeding the same input abstraction as the virtual joystick.
+
+Do not create separate movement logic for keyboard.
+
+---
+
+22. CONNECTION STATES
+
+Implement:
+
+DISCONNECTED
+CONNECTING
+CONNECTED
+RECONNECTING
+FAILED
+
+Expose connection state through a networking service.
+
+The UI should react appropriately.
+
+During gameplay show a subtle status indicator.
+
+Example:
+
+● Connected
+
+If disconnected:
+
+Connection lost
+
+Provide a retry path.
+
+---
+
+23. PLAYER DISCONNECT
+
+If a non-host player disconnects:
+
+- remove them from the authoritative simulation
+- broadcast playerLeft
+- remove their visual representation
+- free their slot
+
+If the host disconnects:
+
+Display:
+
+Host disconnected
+
+Return players to the home screen.
+
+Do not implement host migration in this MVP.
+
+However, keep the networking architecture clean enough that host migration can be added later.
+
+---
+
+24. GAME START
+
+The game should automatically start when appropriate.
+
+For MVP:
+
+- Host can enter the game immediately.
+- Players can join while the game is running.
+- A joining player receives the current authoritative state.
+- The new player becomes visible to everyone immediately after joining.
+
+There is no traditional lobby.
+
+Do not require everyone to be ready before the game starts.
+
+---
+
+25. JOINING A LIVE GAME
+
+When a player joins an already-running game:
+
+Host sends:
+
+welcome
+
+followed by the current game state.
+
+The new player should:
+
+1. Create its local player.
+2. Receive current positions.
+3. Initialize remote players.
+4. Start local prediction.
+5. Enter the game.
+
+Avoid visible spawning at (0,0).
+
+Spawn new players at predefined safe spawn positions.
+
+---
+
+26. SPAWN POSITIONS
+
+Create at least 20 deterministic spawn locations.
+
+Example:
+
+- circular arrangement
+- grid
+- predefined points
+
+Do not spawn players on top of one another.
+
+For MVP, simple deterministic spawn positions are sufficient.
+
+---
+
+27. NETWORK BANDWIDTH
+
+Optimize for 20 players.
+
+Do not transmit unnecessarily large messages.
+
+At 20 players:
+
+20 players
+×
+20 input messages/sec
+=
+400 input messages/sec
+
+This is small.
+
+However, keep messages compact.
+
+Do not transmit:
+
+- assets
+- unnecessary metadata
+- full UI state
+- redundant information
+
+The network protocol must remain game-state focused.
+
+---
+
+28. STATE BROADCAST
+
+For MVP, the host may broadcast the complete player state to all players at approximately 20 Hz.
+
+Example:
+
+{
+    tick: 1004,
+    players: [
+        { id: "A", x: 100, y: 200, vx: 1, vy: 0 },
+        { id: "B", x: 300, y: 100, vx: 0, vy: 1 },
+        ...
+    ]
+}
+
+At 20 players this is acceptable for the MVP.
+
+Design the protocol so that future optimizations can introduce:
+
+- delta compression
+- interest management
+- spatial partitioning
+- reduced state frequency
+- binary encoding
+
+Do not prematurely implement these optimizations.
+
+---
+
+29. PERFORMANCE
+
+Target:
+
+60 FPS
+
+on modern mobile devices.
+
+Avoid:
+
+- allocations every frame
+- unnecessary DOM updates
+- unnecessary Phaser objects
+- excessive network traffic
+- expensive physics
+- full scene recreation
+- unnecessary React-style re-rendering
+
+The game must remain responsive while all 20 players are moving simultaneously.
+
+---
+
+30. UI
+
+Create a polished, minimal mobile UI.
+
+Home:
+
+POCKET ARENA
+
+2-20 PLAYER BROWSER GAME
+
+[ CREATE GAME ]
+
+After creating:
+
+GAME CREATED
+
+Invite your friends
+
+[ SHARE GAME ]
+
+[ COPY LINK ]
+
+Waiting for players...
+
+Display:
+
+Players: 7 / 20
+
+Do not display technical networking terminology.
+
+Players should never see:
+
+- WebRTC
+- ICE
+- STUN
+- SDP
+- signaling
+- DataChannel
+
+unless they are looking at developer/debug tools.
+
+---
+
+31. SHARE API
+
+Use the Web Share API when available.
+
+The share action should share:
+
+- game URL
+- game title
+- short invitation message
+
+Example:
+
+🎮 Join my Pocket Arena game!
+https://game.example.com/join/ABC123
+
+If Web Share API is unavailable:
+
+- copy link
+- show a confirmation
+
+Do not depend on WhatsApp-specific APIs.
+
+The user can paste the generated invitation into WhatsApp, Telegram, SMS, etc.
+
+---
+
+32. URL ROUTING
+
+Support:
+
+/
+
+Home.
+
+And:
+
+/join/:gameId
+
+Join game.
+
+The join page must work when opened directly from an external app such as WhatsApp.
+
+Configure SPA hosting correctly.
+
+---
+
+33. ROOM ID
+
+Generate cryptographically random room IDs.
+
+Do not use predictable incremental IDs.
+
+Room IDs must be short enough to be usable in URLs but sufficiently unpredictable.
+
+Never put private secrets in the room ID.
+
+---
+
+34. SECURITY
+
+Validate all signaling messages.
+
+Validate all gameplay messages.
+
+Never trust:
+
+- player ID
+- sequence number
+- joystick values
+- timestamps
+- positions
+- room IDs
+
+Clamp all values.
+
+The host must remain authoritative.
+
+A client cannot simply send:
+
+x = 999999
+
+and move itself there.
+
+---
+
+35. TECHNOLOGY
+
+Use:
+
+- TypeScript
+- Phaser 3
+- Vite
+- Node.js
+- WebSocket
+- WebRTC
+- npm
+
+Use strict TypeScript.
+
+Do not use:
+
+- React
+- Unity
+- Firebase
+- Supabase
+- database
+- game backend
+- matchmaking service
+
+unless there is an unavoidable technical reason.
+
+---
+
+36. PROJECT STRUCTURE
+
+Use a structure similar to:
+
+src/
+
+    main.ts
+
+    game/
+        Game.ts
+        GameScene.ts
+        GameSimulation.ts
+        Player.ts
+        PlayerManager.ts
+        Arena.ts
+
+    input/
+        InputManager.ts
+        VirtualJoystick.ts
+        KeyboardInput.ts
+
+    networking/
+        WebRTCConnection.ts
+        NetworkClient.ts
+        NetworkProtocol.ts
+        NetworkSerializer.ts
+        Prediction.ts
+        Reconciliation.ts
+        Interpolation.ts
+
+    room/
+        RoomManager.ts
+        InviteLink.ts
+
+    ui/
+        HomeScreen.ts
+        CreateGameScreen.ts
+        JoinGameScreen.ts
+        WaitingScreen.ts
+        ConnectionIndicator.ts
+
+    config/
+        config.ts
+
+    utils/
+
+server/
+
+    index.ts
+
+    signaling/
+        SignalingServer.ts
+        RoomManager.ts
+
+tests/
+
+Maintain clear separation between:
+
+- game simulation
+- rendering
+- input
+- networking
+- room management
+- UI
+
+---
+
+37. IMPORTANT ARCHITECTURAL RULE
+
+Do NOT put gameplay logic inside:
+
+- WebRTC classes
+- UI classes
+- Phaser rendering classes
+
+The core simulation should be independent from WebRTC.
+
+For example:
+
+GameSimulation
+
+should be testable without a browser.
+
+This will make future server-authoritative or native implementations easier.
+
+---
+
+38. TESTING
+
+Create automated tests for:
+
+- room ID generation
+- invite URL generation
+- invite URL parsing
+- joystick normalization
+- dead zone
+- diagonal normalization
+- movement calculation
+- boundary clamping
+- spawn positions
+- network message validation
+- serialization/deserialization
+- sequence numbers
+- prediction
+- reconciliation
+- interpolation
+
+Test the game with:
+
+- 2 players
+- 5 players
+- 10 players
+- 20 players
+
+Test simultaneous movement.
+
+Test players joining while the game is running.
+
+Test player disconnect.
+
+Test host disconnect.
+
+Test full room.
+
+Test malformed network messages.
+
+---
+
+39. MANUAL MULTIPLAYER TEST
+
+The completed application must support this test:
+
+1. Open the game on phone A.
+2. Press Create Game.
+3. Share the generated link to WhatsApp.
+4. Open the link on phones B through T.
+5. Each player presses Join.
+6. All players enter the same game.
+7. All 20 players are visible.
+8. Each player moves their own character.
+9. Every other player sees the movement smoothly.
+10. Move all 20 players simultaneously.
+11. Verify the game remains responsive.
+12. Disconnect one player.
+13. Verify everyone else continues playing.
+14. Disconnect the host.
+15. Verify clients receive a clear host-disconnected state.
+
+---
+
+40. LATENCY TESTING
+
+Provide an optional developer/debug mode that displays:
+
+- WebRTC connection status
+- round-trip time
+- simulation tick
+- input sequence
+- last acknowledged input
+- player count
+
+This debug UI must be disabled for normal users.
+
+If possible, include a simple artificial latency simulation for development:
+
+DEBUG_NETWORK_LATENCY_MS
+DEBUG_PACKET_LOSS_PERCENT
+
+This allows testing prediction/reconciliation.
+
+---
+
+41. DEVELOPMENT COMMANDS
+
+Provide:
+
+npm install
+npm run dev
+npm run dev:server
+npm run dev:all
+npm run build
+npm run lint
+npm run test
+
+Document all commands.
+
+---
+
+42. ENVIRONMENT
+
+Provide:
+
+.env.example
+
+with:
+
+VITE_SIGNALING_URL=
+VITE_STUN_SERVERS=
+SERVER_PORT=
+
+Do not commit secrets.
+
+Production must use:
+
+- HTTPS
+- WSS
+
+because WebRTC and modern browser APIs require secure contexts in production.
+
+---
+
+43. DEPLOYMENT
+
+Frontend:
+
+Static hosting.
+
+Signaling:
+
+Small Node.js service.
+
+The signaling service should be stateless from a persistence perspective.
+
+In-memory rooms are sufficient.
+
+No database.
+
+No persistent user data.
+
+---
+
+44. FUTURE-PROOFING
+
+Do not implement these now:
+
+- authentication
+- accounts
+- matchmaking
+- chat
+- voice
+- scoring
+- weapons
+- enemies
+- inventory
+- persistence
+- host migration
+- TURN management UI
+- complex physics
+
+However, design clean interfaces so these could be added later.
+
+Potential future architecture:
+
+Input
+  ↓
+Simulation
+  ↓
+Authoritative State
+  ↓
+Networking
+  ↓
+Rendering
+
+Keep these responsibilities separate.
+
+---
+
+45. PRODUCT PRINCIPLE
+
+The most important product requirement is:
+
+A group of people should be able to start playing within seconds.
+
+The desired experience is:
+
+Host:
+
+Open game
+   ↓
+Create Game
+   ↓
+Share
+   ↓
+Send WhatsApp message
+   ↓
+Play
+
+Players:
+
+Receive WhatsApp message
+   ↓
+Tap link
+   ↓
+Join
+   ↓
+Play
+
+There must be no technical setup.
+
+No room code.
+
+No QR.
+
+No account.
+
+No lobby.
+
+No configuration.
+
+---
+
+46. ENGINEERING PRIORITIES
+
+When making implementation decisions, prioritize in this exact order:
+
+1. Reliable multiplayer connection
+2. Excellent perceived responsiveness
+3. Mobile touch UX
+4. Support for 20 simultaneous players
+5. Simple architecture
+6. Maintainability
+7. Performance
+8. Visual polish
+
+Do not optimize for theoretical scalability beyond 20 players.
+
+Do not add complexity unless it directly improves one of the requirements above.
+
+---
+
+47. FINAL ACCEPTANCE CRITERIA
+
+The project is complete only when:
+
+- [ ] Mobile browser works.
+- [ ] Desktop browser works.
+- [ ] Host can create a game.
+- [ ] Host receives a shareable link.
+- [ ] Link works directly from WhatsApp.
+- [ ] Player can join with one tap sequence.
+- [ ] No lobby exists.
+- [ ] No QR is required.
+- [ ] Up to 20 players can join.
+- [ ] Player 21 is rejected gracefully.
+- [ ] Each player has one WebRTC gameplay connection to the host.
+- [ ] Signaling server does not carry gameplay traffic.
+- [ ] No database exists.
+- [ ] No persistent game state exists.
+- [ ] Host is authoritative.
+- [ ] Client-side prediction works.
+- [ ] Input sequence numbers work.
+- [ ] Reconciliation works.
+- [ ] Remote-player interpolation works.
+- [ ] Dead reckoning works.
+- [ ] Movement is frame-rate independent.
+- [ ] Diagonal movement is normalized.
+- [ ] Players cannot leave the arena.
+- [ ] 20 players can move simultaneously.
+- [ ] Gameplay remains responsive.
+- [ ] Player disconnect is handled.
+- [ ] Host disconnect is handled.
+- [ ] Invalid games are handled.
+- [ ] WebRTC failures are handled gracefully.
+- [ ] iOS Safari is supported.
+- [ ] Android Chrome is supported.
+- [ ] Build passes.
+- [ ] Lint passes.
+- [ ] Tests pass.
+- [ ] README is complete.
+
+---
+
+48. IMPLEMENTATION INSTRUCTION
+
+Do not merely describe the implementation.
+
+Actually create the complete working project.
+
+Start by establishing the project structure and minimal runnable application.
+
+Then implement:
+
+1. Phaser game
+2. Virtual joystick
+3. Local movement
+4. Room creation
+5. Invite links
+6. Signaling server
+7. WebRTC host connection
+8. WebRTC client connection
+9. Multiplayer player state
+10. Host-authoritative simulation
+11. Client-side prediction
+12. Reconciliation
+13. Remote interpolation
+14. Dead reckoning
+15. 20-player support
+16. Mobile UX
+17. Error handling
+18. Tests
+19. Debug tools
+20. Documentation
+
+Run the build, lint, and tests before finishing.
+
+Fix all errors.
+
+Do not leave required functionality as TODOs.
+
+The result must be a genuinely runnable multiplayer game, not a scaffold or architectural demo.
