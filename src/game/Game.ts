@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 
 import { ARENA_HEIGHT, ARENA_WIDTH, DEFAULT_SPORT } from '../config/constants';
-import type { SportType } from '../config/constants';
+import type { SportType, TeamId } from '../config/constants';
+import type { DrawArrow } from '../networking/NetworkProtocol';
 import { watchViewport } from '../utils/viewport';
 import { GameScene, type SceneBridge } from './GameScene';
 
@@ -56,6 +57,20 @@ export class Game {
     this.scene.setSport(sport);
   }
 
+  /** Team colours and jersey numbers, kept separate from the high-rate physics snapshots. */
+  setRoster(entries: readonly { playerId: string; team: TeamId; number: number }[]): void {
+    this.scene.setRoster(entries);
+  }
+
+  setArrows(arrows: readonly DrawArrow[]): void {
+    this.scene.setArrows(arrows);
+  }
+
+  /** Toggles this device's own tactics-board drawing. `onArrowDrawn` gets world coordinates. */
+  setDrawMode(enabled: boolean, onArrowDrawn: (x1: number, y1: number, x2: number, y2: number) => void): void {
+    this.scene.setDrawMode(enabled, onArrowDrawn);
+  }
+
   get isFullscreenSupported(): boolean {
     return typeof document.documentElement.requestFullscreen === 'function';
   }
@@ -81,3 +96,4 @@ export class Game {
     this.game.destroy(true);
   }
 }
+

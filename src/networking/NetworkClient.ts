@@ -3,7 +3,7 @@ import type { SportType } from '../config/constants';
 import type { GameSession, RenderPlayer } from '../game/RenderPlayer';
 import type { PlayerId, PlayerState, Vector2 } from '../game/types';
 import { RemoteInterpolator, ServerClock } from './Interpolation';
-import type { NetPlayer } from './NetworkProtocol';
+import type { DrawArrow, NetPlayer, ReservedNumber, RosterEntry } from './NetworkProtocol';
 import { channelFor } from './NetworkProtocol';
 import { decodeHostMessage, encode } from './NetworkSerializer';
 import { Prediction } from './Prediction';
@@ -21,6 +21,9 @@ export interface NetworkClientEvents {
   onPlayerCountChange?: (count: number) => void;
   onPaused?: (paused: boolean) => void;
   onSportChange?: (sport: SportType) => void;
+  onRosterChange?: (entries: RosterEntry[], reserved: ReservedNumber[]) => void;
+  onDrawEnabledChange?: (enabled: boolean) => void;
+  onArrowsChange?: (arrows: DrawArrow[]) => void;
   onConnectionState?: (state: ConnectionState) => void;
 }
 
@@ -45,6 +48,10 @@ export class NetworkClient implements GameSession {
   private snapshotsReceived = 0;
   private lastAck = 0;
   private hostTick = 0;
+  private roster: RosterEntry[] = [];
+  private reserved: ReservedNumber[] = [];
+  private drawEnabled = false;
+  private arrows: DrawArrow[] = [];
 
   constructor(
     private readonly transport: Transport,
@@ -83,6 +90,22 @@ export class NetworkClient implements GameSession {
 
   get currentSport(): SportType {
     return this.sport;
+  }
+
+  get currentRoster(): readonly RosterEntry[] {
+    return this.roster;
+  }
+
+  get currentReservedNumbers(): readonly ReservedNumber[] {
+    return this.reserved;
+  }
+
+  get currentDrawEnabled(): boolean {
+    return this.drawEnabled;
+  }
+
+  get currentArrows(): readonly DrawArrow[] {
+    return this.arrows;
   }
 
   get pendingInputCount(): number {
@@ -126,6 +149,20 @@ export class NetworkClient implements GameSession {
         dt: record.dt,
       }),
     );
+  }
+
+  /** Asks the host to switch this player to a different jersey number. The host has final say. */
+  requestNumber(number: number): void {
+    this.transport.send(channelFor('claimNumber'), encode({ type: 'claimNumber', number }));
+  }
+
+  /** Only takes effect if the host has opened the tactics board to everyone. */
+  requestArrow(x1: number, y1: number, x2: number, y2: number): void {
+    this.transport.send(channelFor('drawArrow'), encode({ type: 'drawArrow', x1, y1, x2, y2 }));
+  }
+
+  requestClearMyDrawings(): void {
+    this.transport.send(channelFor('clearMyDrawings'), encode({ type: 'clearMyDrawings' }));
   }
 
   afterFrame(nowMs: number): void {
@@ -235,6 +272,22 @@ export class NetworkClient implements GameSession {
       case 'sport':
         this.sport = message.sport;
         this.events.onSportChange?.(message.sport);
+        return;
+
+      case 'roster':
+        this.roster = message.entries;
+        this.reserved = message.reserved;
+        this.events.onRosterChange?.(message.entries, message.reserved);
+        return;
+
+      case 'drawEnabled':
+        this.drawEnabled = message.enabled;
+        this.events.onDrawEnabledChange?.(message.enabled);
+        return;
+
+      case 'arrows':
+        this.arrows = message.arrows;
+        this.events.onArrowsChange?.(message.arrows);
         return;
 
       case 'rejected':

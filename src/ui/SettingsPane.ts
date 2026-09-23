@@ -4,15 +4,24 @@ import { button, el } from './dom';
 
 export interface SettingsPaneHandlers {
   onSelect: (sport: SportType) => void;
+  onToggleDrawEnabled: (enabled: boolean) => void;
+  onClearAll: () => void;
   onClose: () => void;
 }
 
-/** Host-only field picker; the chosen sport is broadcast to every connected player. */
+/** Host-only field picker plus tactics-board administration. */
 export class SettingsPane {
   private readonly root: HTMLElement;
   private readonly optionButtons = new Map<SportType, HTMLButtonElement>();
+  private readonly drawEnabledButton: HTMLButtonElement;
+  private drawEnabled: boolean;
 
-  constructor(parent: HTMLElement, current: SportType, handlers: SettingsPaneHandlers) {
+  constructor(
+    parent: HTMLElement,
+    current: SportType,
+    drawEnabled: boolean,
+    handlers: SettingsPaneHandlers,
+  ) {
     this.root = el('div', 'settings-pane');
 
     const options = el('div', 'settings-options');
@@ -24,9 +33,18 @@ export class SettingsPane {
       options.append(optionButton);
     }
 
+    this.drawEnabledButton = button('', 'secondary-button', () =>
+      handlers.onToggleDrawEnabled(!this.drawEnabled),
+    );
+    this.drawEnabled = drawEnabled;
+    this.renderDrawEnabledLabel();
+
     this.root.append(
       el('h2', 'share-title', 'GAME FIELD'),
       options,
+      el('h2', 'share-title', 'TACTICS BOARD'),
+      this.drawEnabledButton,
+      button('Clear ALL Drawings', 'secondary-button', () => handlers.onClearAll()),
       button('Close', 'text-button', () => handlers.onClose()),
     );
 
@@ -40,7 +58,20 @@ export class SettingsPane {
     }
   }
 
+  setDrawEnabled(enabled: boolean): void {
+    this.drawEnabled = enabled;
+    this.renderDrawEnabledLabel();
+  }
+
+  private renderDrawEnabledLabel(): void {
+    this.drawEnabledButton.textContent = this.drawEnabled
+      ? 'Drawing: ON for everyone'
+      : 'Drawing: OFF for others';
+    this.drawEnabledButton.classList.toggle('is-active', this.drawEnabled);
+  }
+
   destroy(): void {
     this.root.remove();
   }
 }
+

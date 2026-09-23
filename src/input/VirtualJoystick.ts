@@ -40,6 +40,20 @@ export class VirtualJoystick implements InputSource {
     return this.pointerId !== null;
   }
 
+  /** Lets pointer events fall through to whatever is underneath — used while draw mode is on. */
+  setEnabled(enabled: boolean): void {
+    this.zone.style.pointerEvents = enabled ? '' : 'none';
+    if (enabled) return;
+
+    if (this.pointerId !== null && this.zone.hasPointerCapture(this.pointerId)) {
+      this.zone.releasePointerCapture(this.pointerId);
+    }
+    this.pointerId = null;
+    this.offset = { x: 0, y: 0 };
+    this.zone.classList.remove('is-engaged');
+    this.renderThumb();
+  }
+
   destroy(): void {
     this.zone.removeEventListener('pointerdown', this.onPointerDown);
     this.zone.removeEventListener('pointermove', this.onPointerMove);

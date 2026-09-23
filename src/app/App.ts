@@ -5,7 +5,7 @@ import {
   MAX_CATCHUP_TICKS,
   SIM_TICK_MS,
 } from '../config/constants';
-import type { SportType } from '../config/constants';
+import type { SportType, TeamId } from '../config/constants';
 import { BotSwarm } from '../dev/Bots';
 import type { Game } from '../game/Game';
 import { GameLoop } from '../game/GameLoop';
@@ -13,6 +13,7 @@ import type { GameSession } from '../game/RenderPlayer';
 import { InputManager } from '../input/InputManager';
 import { NetworkClient } from '../networking/NetworkClient';
 import { NetworkHost } from '../networking/NetworkHost';
+import type { ReservedNumber, RosterEntry } from '../networking/NetworkProtocol';
 import { SignalingClient, SignalingError } from '../networking/SignalingClient';
 import { buildIceConfiguration, debugConditions } from '../networking/iceConfig';
 import { fromCandidate, fromDescription, toCandidate, toDescription } from '../networking/sdp';
@@ -25,6 +26,9 @@ import { FullscreenButton } from '../ui/FullscreenButton';
 import { renderHomeScreen } from '../ui/HomeScreen';
 import { renderConnecting, renderJoinScreen } from '../ui/JoinGameScreen';
 import { renderMessageScreen } from '../ui/MessageScreen';
+import { NumberPane } from '../ui/NumberPane';
+import { PlayerToolsButton } from '../ui/PlayerToolsButton';
+import { PlayerToolsPane } from '../ui/PlayerToolsPane';
 import { SettingsButton } from '../ui/SettingsButton';
 import { SettingsPane } from '../ui/SettingsPane';
 import { ShareOverlay } from '../ui/ShareOverlay';
@@ -124,10 +128,96 @@ export class App {
 
   private async runHostSession(signaling: SignalingClient, roomId: string): Promise<void> {
     let share: ShareOverlay | null = null;
+    let roster: RosterEntry[] = [];
+    let reserved: ReservedNumber[] = [];
+    let gameInstance: Game | null = null;
+    let settingsPane: SettingsPane | null = null;
+    let numberPane: NumberPane | null = null;
+    let playerToolsPane: PlayerToolsPane | null = null;
+    let input: InputManager | null = null;
+    let inDrawMode = false;
+    let drawEnabledForAll = false;
+
     const host = new NetworkHost({
       // Event-driven so the counter stays correct even while the tab is backgrounded.
       onPlayerCountChange: (count) => share?.setPlayerCount(count),
+      onRosterChange: (entries, reservedNumbers) => {
+        roster = entries;
+        reserved = reservedNumbers;
+        gameInstance?.setRoster(roster);
+        refreshNumberPane();
+        refreshPlayerToolsPane();
+      },
+      onDrawEnabledChange: (enabled) => {
+        drawEnabledForAll = enabled;
+        settingsPane?.setDrawEnabled(enabled);
+      },
+      onArrowsChange: (arrows) => gameInstance?.setArrows(arrows),
     });
+    roster = host.currentRoster;
+    reserved = host.currentReservedNumbers;
+    drawEnabledForAll = host.currentDrawEnabled;
+
+    const myRosterEntry = (): RosterEntry | undefined =>
+      roster.find((entry) => entry.playerId === host.localPlayerId);
+
+    const takenNumbers = (): Set<number> =>
+      this.takenNumbersForMyTeam(host.localPlayerId, myRosterEntry()?.team ?? 'A', roster, reserved);
+
+    const closeNumberPane = (): void => {
+      numberPane?.destroy();
+      numberPane = null;
+    };
+    const refreshNumberPane = (): void => {
+      numberPane?.update(myRosterEntry()?.number ?? 0, takenNumbers());
+    };
+    const openNumberPane = (): void => {
+      closeNumberPane();
+      numberPane = new NumberPane(this.uiRoot, myRosterEntry()?.number ?? 0, takenNumbers(), {
+        onSelect: (number) => host.claimNumberForSelf(number),
+        onClose: closeNumberPane,
+      });
+    };
+
+    const closePlayerTools = (): void => {
+      closeNumberPane();
+      playerToolsPane?.destroy();
+      playerToolsPane = null;
+    };
+    const renderPlayerToolsPane = (): void => {
+      const mine = myRosterEntry();
+      playerToolsPane = new PlayerToolsPane(this.uiRoot, {
+        team: mine?.team ?? 'A',
+        number: mine?.number ?? 0,
+        // The host can always open the tactics board, whether or not it is open to others.
+        canDraw: true,
+        inDrawMode,
+        onChangeNumber: openNumberPane,
+        onToggleDrawMode: () => setLocalDrawMode(!inDrawMode),
+        onClearMine: () => host.clearMyDrawings(),
+        onClose: closePlayerTools,
+      });
+    };
+    const refreshPlayerToolsPane = (): void => {
+      if (!playerToolsPane) return;
+      playerToolsPane.destroy();
+      renderPlayerToolsPane();
+    };
+    const togglePlayerTools = (): void => {
+      if (playerToolsPane) {
+        closePlayerTools();
+        return;
+      }
+      renderPlayerToolsPane();
+    };
+
+    const setLocalDrawMode = (enabled: boolean): void => {
+      inDrawMode = enabled;
+      input?.setJoystickEnabled(!enabled);
+      gameInstance?.setDrawMode(enabled, (x1, y1, x2, y2) => host.addArrow(x1, y1, x2, y2));
+      playerToolsPane?.setDrawMode(enabled);
+    };
+
     const connections = new Map<string, WebRTCConnection>();
     const configuration = buildIceConfiguration();
     const conditions = debugConditions();
@@ -195,8 +285,6 @@ export class App {
 
     // Only the host chooses the field; the choice is broadcast to every connected player.
     let sport: SportType = DEFAULT_SPORT;
-    let gameInstance: Game | null = null;
-    let settingsPane: SettingsPane | null = null;
     const closeSettings = (): void => {
       settingsPane?.destroy();
       settingsPane = null;
@@ -206,16 +294,20 @@ export class App {
         closeSettings();
         return;
       }
-      settingsPane = new SettingsPane(this.uiRoot, sport, {
+      settingsPane = new SettingsPane(this.uiRoot, sport, drawEnabledForAll, {
         onSelect: (next) => {
           sport = next;
           host.setSport(next);
           gameInstance?.setSport(next);
           settingsPane?.setActive(next);
         },
+        onToggleDrawEnabled: (enabled) => host.setDrawEnabled(enabled),
+        onClearAll: () => host.clearAllDrawings(),
         onClose: closeSettings,
       });
     });
+
+    const playerToolsButton = new PlayerToolsButton(this.uiRoot, togglePlayerTools);
 
     const wakeLock = new ScreenWakeLock();
     void wakeLock.acquire();
@@ -241,6 +333,8 @@ export class App {
       () => indicator.destroy(),
       () => closeSettings(),
       () => settingsButton.destroy(),
+      () => closePlayerTools(),
+      () => playerToolsButton.destroy(),
       () => {
         for (const connection of connections.values()) connection.close();
       },
@@ -253,6 +347,11 @@ export class App {
       initialSport: sport,
       onGameReady: (game) => {
         gameInstance = game;
+        game.setRoster(roster);
+        game.setArrows([...host.currentArrows]);
+      },
+      onInputReady: (im) => {
+        input = im;
       },
       onTick: (_dt, now) => host.step(now),
       onFrame: (now) => {
@@ -317,6 +416,13 @@ export class App {
     let hostLeftSignaling = false;
     let sport: SportType = DEFAULT_SPORT;
     let gameInstance: Game | null = null;
+    let input: InputManager | null = null;
+    let roster: RosterEntry[] = [];
+    let reserved: ReservedNumber[] = [];
+    let drawEnabledForAll = false;
+    let inDrawMode = false;
+    let numberPane: NumberPane | null = null;
+    let playerToolsPane: PlayerToolsPane | null = null;
 
     const client = new NetworkClient(connection, {
       onConnectionState: (state) => {
@@ -335,15 +441,104 @@ export class App {
         sport = next;
         gameInstance?.setSport(next);
       },
+      onRosterChange: (entries, reservedNumbers) => {
+        roster = entries;
+        reserved = reservedNumbers;
+        gameInstance?.setRoster(roster);
+        refreshNumberPane();
+        refreshPlayerToolsPane();
+      },
+      onDrawEnabledChange: (enabled) => {
+        drawEnabledForAll = enabled;
+        // The host closed the board to everyone else; a client mid-drawing must stop too.
+        if (!enabled && inDrawMode) setLocalDrawMode(false);
+        refreshPlayerToolsPane();
+      },
+      onArrowsChange: (arrows) => gameInstance?.setArrows(arrows),
       onReady: () => {
         if (started) return;
         started = true;
         clearTimeout(timeout);
-        void this.startClientGame(client, roomId, () => connectionState, connection, sport, (game) => {
-          gameInstance = game;
-        });
+        roster = [...client.currentRoster];
+        reserved = [...client.currentReservedNumbers];
+        drawEnabledForAll = client.currentDrawEnabled;
+        void this.startClientGame(
+          client,
+          roomId,
+          () => connectionState,
+          connection,
+          sport,
+          (game) => {
+            gameInstance = game;
+          },
+          (im) => {
+            input = im;
+          },
+          togglePlayerTools,
+        );
       },
     });
+
+    const myRosterEntry = (): RosterEntry | undefined =>
+      roster.find((entry) => entry.playerId === client.localPlayerId);
+
+    const takenNumbers = (): Set<number> =>
+      this.takenNumbersForMyTeam(client.localPlayerId, myRosterEntry()?.team ?? 'A', roster, reserved);
+
+    const closeNumberPane = (): void => {
+      numberPane?.destroy();
+      numberPane = null;
+    };
+    const refreshNumberPane = (): void => {
+      numberPane?.update(myRosterEntry()?.number ?? 0, takenNumbers());
+    };
+    const openNumberPane = (): void => {
+      closeNumberPane();
+      numberPane = new NumberPane(this.uiRoot, myRosterEntry()?.number ?? 0, takenNumbers(), {
+        onSelect: (number) => client.requestNumber(number),
+        onClose: closeNumberPane,
+      });
+    };
+
+    const closePlayerTools = (): void => {
+      closeNumberPane();
+      playerToolsPane?.destroy();
+      playerToolsPane = null;
+    };
+    const renderPlayerToolsPane = (): void => {
+      const mine = myRosterEntry();
+      playerToolsPane = new PlayerToolsPane(this.uiRoot, {
+        team: mine?.team ?? 'A',
+        number: mine?.number ?? 0,
+        canDraw: drawEnabledForAll,
+        inDrawMode,
+        onChangeNumber: openNumberPane,
+        onToggleDrawMode: () => setLocalDrawMode(!inDrawMode),
+        onClearMine: () => client.requestClearMyDrawings(),
+        onClose: closePlayerTools,
+      });
+    };
+    const refreshPlayerToolsPane = (): void => {
+      if (!playerToolsPane) return;
+      playerToolsPane.destroy();
+      renderPlayerToolsPane();
+    };
+    const togglePlayerTools = (): void => {
+      if (playerToolsPane) {
+        closePlayerTools();
+        return;
+      }
+      renderPlayerToolsPane();
+    };
+
+    const setLocalDrawMode = (enabled: boolean): void => {
+      inDrawMode = enabled;
+      input?.setJoystickEnabled(!enabled);
+      gameInstance?.setDrawMode(enabled, (x1, y1, x2, y2) => client.requestArrow(x1, y1, x2, y2));
+      playerToolsPane?.setDrawMode(enabled);
+    };
+
+    this.teardowns.push(() => closePlayerTools());
 
     const timeout = setTimeout(() => {
       if (started) return;
@@ -396,6 +591,8 @@ export class App {
     connection: WebRTCConnection,
     initialSport: SportType,
     onGameReady: (game: Game) => void,
+    onInputReady: (input: InputManager) => void,
+    onOpenPlayerTools: () => void,
   ): Promise<void> {
     clear(this.uiRoot);
 
@@ -404,10 +601,18 @@ export class App {
     indicator.setRetryHandler(() => void this.joinGame(roomId));
     this.teardowns.push(() => indicator.destroy());
 
+    const playerToolsButton = new PlayerToolsButton(this.uiRoot, onOpenPlayerTools);
+    this.teardowns.push(() => playerToolsButton.destroy());
+
     await this.runGame(client, {
       role: 'client',
       initialSport,
-      onGameReady,
+      onGameReady: (game) => {
+        onGameReady(game);
+        game.setRoster([...client.currentRoster]);
+        game.setArrows([...client.currentArrows]);
+      },
+      onInputReady,
       onTick: () => {},
       onFrame: (now) => {
         client.afterFrame(now);
@@ -438,6 +643,7 @@ export class App {
       role: 'host' | 'client';
       initialSport?: SportType;
       onGameReady?: (game: Game) => void;
+      onInputReady?: (input: InputManager) => void;
       onTick: (dt: number, nowMs: number) => void;
       onFrame: (nowMs: number) => void;
       stats: () => {
@@ -452,6 +658,7 @@ export class App {
     },
   ): Promise<void> {
     const input = InputManager.create(this.uiRoot);
+    options.onInputReady?.(input);
     const debug = isDebugEnabled() ? new DebugOverlay(this.uiRoot) : null;
 
     const rotateHint = el('div', 'rotate-hint', 'Rotate your device for a bigger view');
@@ -535,6 +742,23 @@ export class App {
       () => rotateHint.remove(),
       () => delete window.__pocketArena,
     );
+  }
+
+  /** Numbers unavailable on `team` — teammates' current numbers, plus anything still in grace. */
+  private takenNumbersForMyTeam(
+    selfPlayerId: string,
+    team: TeamId,
+    roster: readonly RosterEntry[],
+    reserved: readonly ReservedNumber[],
+  ): Set<number> {
+    const taken = new Set<number>();
+    for (const entry of roster) {
+      if (entry.team === team && entry.playerId !== selfPlayerId) taken.add(entry.number);
+    }
+    for (const entry of reserved) {
+      if (entry.team === team) taken.add(entry.number);
+    }
+    return taken;
   }
 
   private reset(): void {

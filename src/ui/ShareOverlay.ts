@@ -1,3 +1,4 @@
+import QRCode from 'qrcode';
 import { MAX_PLAYERS } from '../config/constants';
 import { buildShareMessage } from '../room/InviteLink';
 import { button, el } from './dom';
@@ -24,10 +25,14 @@ export class ShareOverlay {
       button('COPY LINK', 'secondary-button', () => void this.copy()),
     );
 
+    const qrContainer = el('div', 'share-qr');
+    this.renderQr(qrContainer);
+
     this.root.append(
       el('h2', 'share-title', 'GAME CREATED'),
       el('p', 'subtitle', 'Invite your friends'),
       linkPreview,
+      qrContainer,
       actions,
       this.counter,
       this.status,
@@ -35,6 +40,18 @@ export class ShareOverlay {
     );
 
     parent.append(this.root);
+  }
+
+  private renderQr(container: HTMLElement): void {
+    const canvas = document.createElement('canvas');
+    QRCode.toCanvas(canvas, this.inviteUrl, {
+      width: 168,
+      margin: 1,
+      color: { dark: '#0b1620', light: '#ffffff' },
+    }).catch(() => {
+      // Best-effort only — the link and copy/share buttons still work without a QR code.
+    });
+    container.append(canvas);
   }
 
   setPlayerCount(count: number): void {

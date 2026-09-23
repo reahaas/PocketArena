@@ -31,6 +31,11 @@ export class InputManager {
     return this.joystick;
   }
 
+  /** Disabled while draw mode is on, so drags reach the tactics board instead of the stick. */
+  setJoystickEnabled(enabled: boolean): void {
+    this.joystick.setEnabled(enabled);
+  }
+
   destroy(): void {
     for (const source of this.sources) source.destroy();
   }

@@ -74,3 +74,19 @@ export const SPORT_LABELS: Record<SportType, string> = {
   basketball: 'BASKETBALL',
   waterpolo: 'WATER POLO',
 };
+
+// --- Teams / jersey numbers -----------------------------------------------
+/** The host assigns both; balanced across teams and unique-per-team (spec-equivalent, new). */
+export type TeamId = 'A' | 'B';
+export const TEAMS: TeamId[] = ['A', 'B'];
+export const TEAM_COLORS: Record<TeamId, number> = { A: 0x3b82f6, B: 0xef4444 };
+export const TEAM_LABELS: Record<TeamId, string> = { A: 'BLUE', B: 'RED' };
+export const NUMBER_MIN = 1;
+export const NUMBER_MAX = 50;
+/** A disconnected player keeps their number for a minute, in case it is a reconnect. */
+export const NUMBER_RELEASE_GRACE_MS = 60_000;
+
+// --- Tactics drawing ------------------------------------------------------
+export const MAX_DRAW_ARROWS = 200;
+/** Drags shorter than this are treated as accidental taps, not an arrow. */
+export const MIN_ARROW_LENGTH_PX = 20;
