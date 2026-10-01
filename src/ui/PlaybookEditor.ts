@@ -24,6 +24,8 @@ export interface PlaybookEditorHandlers {
   onAddStep: (startSeconds: number, durationSeconds: number) => void;
   onUndoStep: () => void;
   onClearPath: () => void;
+  /** Fires on every keystroke in the name field — used to keep the autosaved draft's name fresh. */
+  onNameChange: (name: string) => void;
   onSave: (name: string) => void;
   onPreview: () => void;
   onExportVideo: () => void;
@@ -57,6 +59,7 @@ export class PlaybookEditor {
   private readonly durationInput: HTMLInputElement;
   private readonly addStepButton: HTMLButtonElement;
   private readonly statusText: HTMLElement;
+  private readonly autosaveNote: HTMLElement;
   private readonly resizeObserver: ResizeObserver | null;
   readonly nameInput: HTMLInputElement;
 
@@ -68,6 +71,9 @@ export class PlaybookEditor {
     this.nameInput.placeholder = 'Play name';
     this.nameInput.maxLength = MAX_PLAYBOOK_NAME_LENGTH;
     this.nameInput.className = 'playbook-name-input';
+    this.nameInput.addEventListener('input', () => handlers.onNameChange(this.nameInput.value));
+
+    this.autosaveNote = el('p', 'playbook-autosave-note', '');
 
     const helpButton = button('?', 'playbook-help-button', handlers.onHelp);
     const header = el('div', 'playbook-editor-header');
@@ -137,7 +143,7 @@ export class PlaybookEditor {
       button('Cancel', 'text-button', handlers.onCancel),
     );
 
-    this.root.append(header, teamsSection, this.summary, this.stepBuilder, this.statusText, footer);
+    this.root.append(header, this.autosaveNote, teamsSection, this.summary, this.stepBuilder, this.statusText, footer);
     parent.append(this.root);
 
     this.resizeObserver =
@@ -211,6 +217,10 @@ export class PlaybookEditor {
 
   setStatus(text: string): void {
     this.statusText.textContent = text;
+  }
+
+  setAutosaveNote(text: string): void {
+    this.autosaveNote.textContent = text;
   }
 
   destroy(): void {

@@ -2,6 +2,7 @@ import {
   MAX_INPUT_DT,
   MAX_PLAYBOOK_ASSIGNMENTS,
   MAX_PLAYBOOK_NAME_LENGTH,
+  MAX_PLAYBOOK_PLAYERS_PER_TEAM,
   MAX_PLAYERS,
   MAX_STEPS_PER_ASSIGNMENT,
   NUMBER_MAX,
@@ -67,6 +68,18 @@ export interface Play {
   id: string;
   name: string;
   durationMs: number;
+  assignments: PlaybookAssignment[];
+}
+
+/**
+ * In-progress editor state, autosaved locally (never sent over the wire) so a coach never loses
+ * work by navigating away mid-edit. Unlike `Play`, it has no `id` and `assignments` may have no
+ * steps yet — a draft can be just a roster with nothing placed.
+ */
+export interface PlaybookDraft {
+  name: string;
+  updatedAtMs: number;
+  players: { team: TeamId; number: number }[];
   assignments: PlaybookAssignment[];
 }
 
@@ -290,6 +303,38 @@ export function parsePlay(value: unknown): Play | null {
   }
 
   return { id: value.id, name: value.name, durationMs, assignments };
+}
+
+/** Validates a locally-persisted draft. Lenient vs. `parsePlay`: empty name/steps/players are fine. */
+export function parseDraft(value: unknown): PlaybookDraft | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.name !== 'string' || value.name.length > MAX_PLAYBOOK_NAME_LENGTH) return null;
+
+  const updatedAtMs = sanitizeNumber(value.updatedAtMs, -1);
+  if (!Number.isFinite(updatedAtMs) || updatedAtMs < 0) return null;
+
+  const maxPlayers = MAX_PLAYBOOK_PLAYERS_PER_TEAM * TEAMS.length;
+  if (!Array.isArray(value.players) || value.players.length > maxPlayers) return null;
+  const players: { team: TeamId; number: number }[] = [];
+  for (const entry of value.players) {
+    if (!isRecord(entry)) return null;
+    const team = parseTeam(entry.team);
+    const number = parseJerseyNumber(entry.number);
+    if (!team || number === null) return null;
+    players.push({ team, number });
+  }
+
+  if (!Array.isArray(value.assignments) || value.assignments.length > MAX_PLAYBOOK_ASSIGNMENTS) {
+    return null;
+  }
+  const assignments: PlaybookAssignment[] = [];
+  for (const entry of value.assignments) {
+    const assignment = parseAssignment(entry);
+    if (!assignment) return null;
+    assignments.push(assignment);
+  }
+
+  return { name: value.name, updatedAtMs, players, assignments };
 }
 
 function parseGrade(value: unknown): PlaybookGrade | null {

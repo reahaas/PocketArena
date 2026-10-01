@@ -24,6 +24,7 @@ import { NetworkClient } from '../networking/NetworkClient';
 import { NetworkHost } from '../networking/NetworkHost';
 import type {
   PlaybookAssignment,
+  PlaybookDraft,
   PlaybookGrade,
   Play,
   ReservedNumber,
@@ -37,9 +38,12 @@ import { WebRTCConnection } from '../networking/transport/WebRTCConnection';
 import { basePath, buildInviteUrl, parseJoinPath } from '../room/InviteLink';
 import { generatePlayerId } from '../room/RoomId';
 import {
+  clearDraft,
   exportPlay,
   importPlayFromFile,
+  loadDraft,
   loadPlays,
+  saveDraft,
   sanitizeFilename,
   savePlays,
 } from '../storage/PlaybookStorage';
@@ -56,6 +60,7 @@ import type { PlaybookEditorPlayer, PlaybookStepStage } from '../ui/PlaybookEdit
 import { PlaybookEditor, teamNumberKey } from '../ui/PlaybookEditor';
 import { PlaybookInstructions } from '../ui/PlaybookInstructions';
 import { PlaybookPane } from '../ui/PlaybookPane';
+import type { PlaybookPaneHandlers } from '../ui/PlaybookPane';
 import { PlaybookResultsPane } from '../ui/PlaybookResultsPane';
 import { PlayerToolsButton } from '../ui/PlayerToolsButton';
 import { PlayerToolsPane } from '../ui/PlayerToolsPane';
@@ -64,6 +69,7 @@ import { SettingsPane } from '../ui/SettingsPane';
 import { ShareOverlay } from '../ui/ShareOverlay';
 import { clear, el } from '../ui/dom';
 import { clamp } from '../utils/math';
+import { formatRelativeTime } from '../utils/time';
 import { ScreenWakeLock } from '../utils/wakeLock';
 
 const WELCOME_TIMEOUT_MS = 20_000;
@@ -558,6 +564,7 @@ export class App {
     let pendingEnd: { x: number; y: number } | null = null;
     let previewTimer: ReturnType<typeof setTimeout> | null = null;
     let gameInstance: Game | null = null;
+    let currentDraft: PlaybookDraft | null = loadDraft();
 
     const nextNumberForTeam = (team: TeamId): number | null => {
       const used = new Set(editorPlayers.filter((p) => p.team === team).map((p) => p.number));
@@ -576,6 +583,30 @@ export class App {
     const refreshEditorPaths = (): void => {
       const assignments = [...draftAssignments.values()].filter((a) => a.steps.length > 0);
       gameInstance?.setPlaybookEditAssignments(assignments);
+    };
+
+    /** Autosaves (or clears) the in-progress editor state so a reload/crash never loses unsaved work. */
+    const persistDraft = (): void => {
+      const assignments = [...draftAssignments.values()];
+      const hasContent = editorPlayers.length > 0 || assignments.some((a) => a.steps.length > 0);
+      if (!hasContent) {
+        if (currentDraft) {
+          clearDraft();
+          currentDraft = null;
+        }
+        playbookEditor?.setAutosaveNote('');
+        return;
+      }
+
+      const draft: PlaybookDraft = {
+        name: playbookEditor?.nameInput.value.trim() ?? '',
+        updatedAtMs: Date.now(),
+        players: editorPlayers,
+        assignments,
+      };
+      saveDraft(draft);
+      currentDraft = draft;
+      playbookEditor?.setAutosaveNote(`Draft saved ${formatRelativeTime(draft.updatedAtMs)}`);
     };
 
     const lastStepOf = (target: PlaybookEditorPlayer) => {
@@ -642,6 +673,7 @@ export class App {
       if (number === null) return;
       editorPlayers = [...editorPlayers, { team, number }];
       refreshEditorPlayers();
+      persistDraft();
     };
 
     const removePlaybookPlayer = (target: PlaybookEditorPlayer): void => {
@@ -649,10 +681,12 @@ export class App {
       draftAssignments.delete(teamNumberKey(target.team, target.number));
       if (armedTarget && armedTarget.team === target.team && armedTarget.number === target.number) {
         armPlaybookPlayer(null);
+        persistDraft();
         return;
       }
       refreshEditorPlayers();
       refreshEditorPaths();
+      persistDraft();
     };
 
     const addPlaybookStep = (startSeconds: number, durationSeconds: number): void => {
@@ -684,6 +718,7 @@ export class App {
       playbookEditor?.setStatus('Step added.');
       resetPending({ x: pendingEnd.x, y: pendingEnd.y });
       playbookEditor?.setTimingDefaults((startMs + durationMs) / 1000, durationSeconds || DEFAULT_STEP_DURATION_MS / 1000);
+      persistDraft();
     };
 
     const undoPlaybookStep = (): void => {
@@ -692,6 +727,7 @@ export class App {
       steps?.sort((a, b) => a.startMs - b.startMs).pop();
       refreshEditorPaths();
       playbookEditor?.setSummary(stepSummary(armedTarget));
+      persistDraft();
     };
 
     const clearPlaybookPath = (): void => {
@@ -701,6 +737,7 @@ export class App {
       playbookEditor?.setSummary(stepSummary(armedTarget));
       resetPending(null);
       playbookEditor?.setTimingDefaults(0, DEFAULT_STEP_DURATION_MS / 1000);
+      persistDraft();
     };
 
     const stopPlaybookPreview = (): void => {
@@ -789,11 +826,13 @@ export class App {
       playbookPane = null;
     };
 
-    const openPlaybookEditor = (): void => {
+    const openPlaybookEditor = (initialDraft?: PlaybookDraft): void => {
       closePlaybookPane();
       closePlaybookEditor();
-      editorPlayers = [];
-      draftAssignments = new Map();
+      editorPlayers = initialDraft ? initialDraft.players.map((p) => ({ ...p })) : [];
+      draftAssignments = new Map(
+        initialDraft ? initialDraft.assignments.map((a) => [teamNumberKey(a.team, a.number), a]) : [],
+      );
       armedTarget = null;
       pendingStage = 'start';
       pendingStart = null;
@@ -807,6 +846,7 @@ export class App {
         onAddStep: addPlaybookStep,
         onUndoStep: undoPlaybookStep,
         onClearPath: clearPlaybookPath,
+        onNameChange: () => persistDraft(),
         onSave: (name) => savePlaybookDraft(name),
         onPreview: () => startPlaybookPreview(false),
         onExportVideo: () => startPlaybookPreview(true),
@@ -818,11 +858,15 @@ export class App {
         onHeightChange: (heightPx) => gameInstance?.setBottomInset(heightPx),
       });
 
+      if (initialDraft) {
+        playbookEditor.nameInput.value = initialDraft.name;
+        playbookEditor.setAutosaveNote(`Draft saved ${formatRelativeTime(initialDraft.updatedAtMs)}`);
+      }
+
       refreshEditorPlayers();
       refreshEditorPaths();
       playbookEditor.setTimingDefaults(0, DEFAULT_STEP_DURATION_MS / 1000);
       gameInstance?.setPlaybookEditMode(true, null, onPlaybookFieldTap);
-      gameInstance?.setPlaybookEditAssignments([]);
     };
 
     const savePlaybookDraft = (name: string): void => {
@@ -834,6 +878,8 @@ export class App {
 
       playbookLibrary = [play, ...playbookLibrary];
       savePlays(playbookLibrary);
+      clearDraft();
+      currentDraft = null;
       closePlaybookEditor();
       openPlaybookPane();
     };
@@ -841,8 +887,8 @@ export class App {
     const openPlaybookPane = (): void => {
       closePlaybookEditor();
       closePlaybookPane();
-      playbookPane = new PlaybookPane(this.uiRoot, playbookLibrary, {
-        onNew: openPlaybookEditor,
+      const handlers: PlaybookPaneHandlers = {
+        onNew: () => openPlaybookEditor(),
         onExport: (play) => exportPlay(play),
         onImport: (file) => {
           void importPlayFromFile(file).then((play) => {
@@ -858,7 +904,21 @@ export class App {
           playbookPane?.update(playbookLibrary);
         },
         onClose: () => this.showHome(),
-      });
+      };
+      if (currentDraft) {
+        handlers.onResumeDraft = () => openPlaybookEditor(currentDraft ?? undefined);
+        handlers.onDiscardDraft = () => {
+          clearDraft();
+          currentDraft = null;
+          openPlaybookPane();
+        };
+      }
+      playbookPane = new PlaybookPane(
+        this.uiRoot,
+        playbookLibrary,
+        handlers,
+        currentDraft ? { name: currentDraft.name, updatedAtMs: currentDraft.updatedAtMs } : null,
+      );
     };
 
     clear(this.uiRoot);

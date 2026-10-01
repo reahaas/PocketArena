@@ -1,8 +1,9 @@
 import { MAX_SAVED_PLAYS } from '../config/constants';
-import type { Play } from '../networking/NetworkProtocol';
-import { parsePlay } from '../networking/NetworkProtocol';
+import type { Play, PlaybookDraft } from '../networking/NetworkProtocol';
+import { parseDraft, parsePlay } from '../networking/NetworkProtocol';
 
 const STORAGE_KEY = 'pocketarena.plays.v1';
+const DRAFT_STORAGE_KEY = 'pocketarena.playbookDraft.v1';
 
 /** The library lives on the host's device only; sharing a play means exporting/importing a file. */
 export function loadPlays(): Play[] {
@@ -28,6 +29,36 @@ export function savePlays(plays: readonly Play[]): void {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(plays.slice(0, MAX_SAVED_PLAYS)));
   } catch {
     // Storage can be full or unavailable (e.g. private browsing) — losing the save beats crashing.
+  }
+}
+
+/**
+ * The single in-progress draft for this device — autosaved continuously while the coach edits, so
+ * closing the tab, reloading, or navigating away never loses unsaved work.
+ */
+export function loadDraft(): PlaybookDraft | null {
+  try {
+    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    return parseDraft(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+export function saveDraft(draft: PlaybookDraft): void {
+  try {
+    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+  } catch {
+    // Best-effort, same as savePlays.
+  }
+}
+
+export function clearDraft(): void {
+  try {
+    localStorage.removeItem(DRAFT_STORAGE_KEY);
+  } catch {
+    // Nothing to do if storage is unavailable.
   }
 }
 

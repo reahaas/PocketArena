@@ -1,5 +1,12 @@
 import type { Play } from '../networking/NetworkProtocol';
+import { formatRelativeTime } from '../utils/time';
 import { button, clear, el } from './dom';
+
+/** Shown above the library when there's unsaved editor work for this device. */
+export interface DraftSummary {
+  name: string;
+  updatedAtMs: number;
+}
 
 export interface PlaybookPaneHandlers {
   /** Omitted in the offline studio's "run saved plays" view — hides the "+ New Play" button. */
@@ -10,6 +17,9 @@ export interface PlaybookPaneHandlers {
   onImport: (file: File) => void;
   onDelete: (play: Play) => void;
   onClose: () => void;
+  /** Present only when there's an autosaved draft to offer resuming or discarding. */
+  onResumeDraft?: () => void;
+  onDiscardDraft?: () => void;
 }
 
 /** The saved-plays library, plus the tools to create, launch, or share one (whichever apply). */
@@ -19,7 +29,12 @@ export class PlaybookPane {
   private readonly fileInput: HTMLInputElement;
   private readonly handlers: PlaybookPaneHandlers;
 
-  constructor(parent: HTMLElement, plays: readonly Play[], handlers: PlaybookPaneHandlers) {
+  constructor(
+    parent: HTMLElement,
+    plays: readonly Play[],
+    handlers: PlaybookPaneHandlers,
+    draft?: DraftSummary | null,
+  ) {
     this.handlers = handlers;
     this.root = el('div', 'settings-pane playbook-pane');
     this.list = el('div', 'playbook-list');
@@ -38,8 +53,29 @@ export class PlaybookPane {
     if (handlers.onNew) actions.append(button('+ New Play', 'secondary-button', handlers.onNew));
     actions.append(button('Import File', 'secondary-button', () => this.fileInput.click()));
 
+    this.root.append(el('h2', 'share-title', 'PLAYBOOK'));
+
+    if (draft && handlers.onResumeDraft && handlers.onDiscardDraft) {
+      const onResumeDraft = handlers.onResumeDraft;
+      const onDiscardDraft = handlers.onDiscardDraft;
+      const draftRow = el('div', 'playbook-draft-row');
+      draftRow.append(
+        el(
+          'span',
+          'playbook-row-name',
+          `Continue draft: ${draft.name || 'Untitled Play'} — saved ${formatRelativeTime(draft.updatedAtMs)}`,
+        ),
+      );
+      const draftActions = el('div', 'playbook-row-actions');
+      draftActions.append(
+        button('Resume', 'primary-button', onResumeDraft),
+        button('Discard', 'text-button', onDiscardDraft),
+      );
+      draftRow.append(draftActions);
+      this.root.append(draftRow);
+    }
+
     this.root.append(
-      el('h2', 'share-title', 'PLAYBOOK'),
       actions,
       this.list,
       this.fileInput,

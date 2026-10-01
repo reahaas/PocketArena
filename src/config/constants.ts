@@ -108,7 +108,7 @@ export const PLAYBOOK_ACCURACY_SAMPLE_MS = 200;
 /** Distance (px) at which accuracy bottoms out at 0% — roughly half the arena width. */
 export const PLAYBOOK_ACCURACY_MAX_DISTANCE_PX = 220;
 /** Default length the editor gives a newly-added step when the coach does not set one. */
-export const DEFAULT_STEP_DURATION_MS = 1_500;
+export const DEFAULT_STEP_DURATION_MS = 500;
 /** Frame rate used when recording a play preview to a shareable video file. */
 export const PLAYBOOK_EXPORT_FPS = 24;
 /** Extra time recorded after the last step finishes, so the final position holds briefly. */
