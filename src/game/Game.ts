@@ -111,6 +111,11 @@ export class Game {
     this.scene.setPlaybookEditAssignments(assignments);
   }
 
+  /** The coach's draft player list — shown as static markers on the field, even with no steps yet. */
+  setPlaybookEditPlayers(players: readonly ArmedTarget[]): void {
+    this.scene.setPlaybookEditPlayers(players);
+  }
+
   /** The start/end points placed so far for the step the coach is currently building. */
   setPlaybookPendingPoints(
     start: { x: number; y: number } | null,

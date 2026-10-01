@@ -1,3 +1,5 @@
+import { ARENA_HEIGHT, ARENA_WIDTH } from '../config/constants';
+import type { TeamId } from '../config/constants';
 import type { PlaybookStep } from '../networking/NetworkProtocol';
 import { clamp, lerp } from '../utils/math';
 import type { Vector2 } from './types';
@@ -34,4 +36,18 @@ export function expectedPlaybookPosition(
   }
 
   return lastEnd;
+}
+
+/**
+ * Lines a team up on its own side of the field, evenly spaced top-to-bottom, so a freshly added
+ * editor player is visible on the field immediately — even before they have any steps.
+ */
+export function defaultPlaybookEditorPosition(
+  team: TeamId,
+  indexInTeam: number,
+  countInTeam: number,
+): Vector2 {
+  const x = team === 'A' ? ARENA_WIDTH * 0.25 : ARENA_WIDTH * 0.75;
+  const y = (ARENA_HEIGHT * (indexInTeam + 1)) / (countInTeam + 1);
+  return { x, y };
 }

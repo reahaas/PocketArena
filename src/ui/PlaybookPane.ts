@@ -2,15 +2,17 @@ import type { Play } from '../networking/NetworkProtocol';
 import { button, clear, el } from './dom';
 
 export interface PlaybookPaneHandlers {
-  onNew: () => void;
-  onRun: (play: Play) => void;
+  /** Omitted in the offline studio's "run saved plays" view — hides the "+ New Play" button. */
+  onNew?: () => void;
+  /** Omitted in the offline studio — hides "Run" on every row, since there's no room to run against. */
+  onRun?: (play: Play) => void;
   onExport: (play: Play) => void;
   onImport: (file: File) => void;
   onDelete: (play: Play) => void;
   onClose: () => void;
 }
 
-/** Host-only library: every saved play, plus the tools to create, launch, or share one. */
+/** The saved-plays library, plus the tools to create, launch, or share one (whichever apply). */
 export class PlaybookPane {
   private readonly root: HTMLElement;
   private readonly list: HTMLElement;
@@ -33,10 +35,8 @@ export class PlaybookPane {
     });
 
     const actions = el('div', 'settings-options');
-    actions.append(
-      button('+ New Play', 'secondary-button', handlers.onNew),
-      button('Import File', 'secondary-button', () => this.fileInput.click()),
-    );
+    if (handlers.onNew) actions.append(button('+ New Play', 'secondary-button', handlers.onNew));
+    actions.append(button('Import File', 'secondary-button', () => this.fileInput.click()));
 
     this.root.append(
       el('h2', 'share-title', 'PLAYBOOK'),
@@ -67,8 +67,11 @@ export class PlaybookPane {
         ),
       );
       const rowActions = el('div', 'playbook-row-actions');
+      if (this.handlers.onRun) {
+        const onRun = this.handlers.onRun;
+        rowActions.append(button('Run', 'primary-button', () => onRun(play)));
+      }
       rowActions.append(
-        button('Run', 'primary-button', () => this.handlers.onRun(play)),
         button('Export', 'text-button', () => this.handlers.onExport(play)),
         button('Delete', 'text-button', () => this.handlers.onDelete(play)),
       );

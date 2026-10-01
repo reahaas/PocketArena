@@ -170,7 +170,10 @@ export class App {
   private showHome(): void {
     this.reset();
     history.replaceState(null, '', `${basePath()}/${window.location.search}`);
-    renderHomeScreen(this.uiRoot, { onCreateGame: () => void this.hostGame() });
+    renderHomeScreen(this.uiRoot, {
+      onCreateGame: () => void this.hostGame(),
+      onOpenPlaybook: () => void this.runPlaybookStudio(),
+    });
   }
 
   private showJoin(roomId: string): void {
@@ -245,15 +248,6 @@ export class App {
 
     let playbookLibrary: Play[] = loadPlays();
     let playbookPane: PlaybookPane | null = null;
-    let playbookEditor: PlaybookEditor | null = null;
-    let playbookInstructions: PlaybookInstructions | null = null;
-    let editorPlayers: PlaybookEditorPlayer[] = [];
-    let draftAssignments = new Map<string, PlaybookAssignment>();
-    let armedTarget: PlaybookEditorPlayer | null = null;
-    let pendingStage: PlaybookStepStage = 'start';
-    let pendingStart: { x: number; y: number } | null = null;
-    let pendingEnd: { x: number; y: number } | null = null;
-    let previewTimer: ReturnType<typeof setTimeout> | null = null;
 
     const host = new NetworkHost({
       // Event-driven so the counter stays correct even while the tab is backgrounded.
@@ -341,9 +335,229 @@ export class App {
       playerToolsPane?.setDrawMode(enabled);
     };
 
-    // --- Playbook (host-only editor + library) ---------------------------
-    // The editor's roster is independent of who is actually connected — the coach designs a
-    // play (any mix of team sizes) offline, then runs it against whoever is in the room later.
+    // --- Playbook (host-only: run a saved play against whoever is connected) -------------
+    // Creating/editing a play happens entirely offline from the main menu's Playbook studio —
+    // this in-room pane only lists the shared library and launches a run.
+
+    const closePlaybookPane = (): void => {
+      playbookPane?.destroy();
+      playbookPane = null;
+    };
+
+    const openPlaybookPane = (): void => {
+      closePlaybookPane();
+      playbookLibrary = loadPlays();
+      playbookPane = new PlaybookPane(this.uiRoot, playbookLibrary, {
+        onRun: (play) => {
+          closePlaybookPane();
+          host.runPlaybook(play);
+        },
+        onExport: (play) => exportPlay(play),
+        onImport: (file) => {
+          void importPlayFromFile(file).then((play) => {
+            if (!play) return;
+            playbookLibrary = [play, ...playbookLibrary];
+            savePlays(playbookLibrary);
+            playbookPane?.update(playbookLibrary);
+          });
+        },
+        onDelete: (play) => {
+          playbookLibrary = playbookLibrary.filter((p) => p.id !== play.id);
+          savePlays(playbookLibrary);
+          playbookPane?.update(playbookLibrary);
+        },
+        onClose: closePlaybookPane,
+      });
+    };
+
+    const togglePlaybookPane = (): void => {
+      if (playbookPane) {
+        closePlaybookPane();
+        return;
+      }
+      openPlaybookPane();
+    };
+
+    const connections = new Map<string, WebRTCConnection>();
+    const configuration = buildIceConfiguration();
+    const conditions = debugConditions();
+    signaling.onMessage((message) => {
+      switch (message.type) {
+        case 'peerJoined': {
+          const peerId = message.peerId;
+          const connection = new WebRTCConnection({
+            role: 'offerer',
+            configuration,
+            conditions,
+            onLocalCandidate: (candidate) =>
+              signaling.send({ type: 'ice', to: peerId, candidate: fromCandidate(candidate) }),
+          });
+          connections.set(peerId, connection);
+
+          connection.setHandlers({
+            onStateChange: (state) => {
+              // Only admit the peer once both data channels are actually usable.
+              if (state === 'CONNECTED') host.acceptPeer(connection, performance.now());
+            },
+          });
+
+          void connection
+            .createOffer()
+            .then((offer) =>
+              signaling.send({ type: 'offer', to: peerId, sdp: fromDescription(offer) }),
+            );
+          return;
+        }
+
+        case 'answer':
+          void connections.get(message.from)?.acceptAnswer(toDescription(message.sdp));
+          return;
+
+        case 'ice':
+          void connections.get(message.from)?.addIceCandidate(toCandidate(message.candidate));
+          return;
+
+        case 'peerLeft': {
+          const connection = connections.get(message.peerId);
+          connections.delete(message.peerId);
+          // Losing a signaling socket says nothing about an established game, which is
+          // peer-to-peer. Only abandon handshakes that never finished.
+          if (connection && connection.state !== 'CONNECTED') connection.close();
+          return;
+        }
+
+        default:
+          return;
+      }
+    });
+
+    clear(this.uiRoot);
+
+    const inviteUrl = buildInviteUrl(roomId, `${window.location.origin}${basePath()}`);
+    // Keep any ?debug=1 / ?bots=N flags alive across the rewrite.
+    history.replaceState(null, '', `${basePath()}/join/${roomId}${window.location.search}`);
+
+    share = new ShareOverlay(this.uiRoot, inviteUrl);
+    share.setPlayerCount(host.playerCount);
+
+    const indicator = new ConnectionIndicator(this.uiRoot);
+    indicator.set('CONNECTED');
+
+    // Only the host chooses the field; the choice is broadcast to every connected player.
+    let sport: SportType = DEFAULT_SPORT;
+    const closeSettings = (): void => {
+      settingsPane?.destroy();
+      settingsPane = null;
+    };
+    const settingsButton = new SettingsButton(this.uiRoot, () => {
+      if (settingsPane) {
+        closeSettings();
+        return;
+      }
+      settingsPane = new SettingsPane(this.uiRoot, sport, drawEnabledForAll, {
+        onSelect: (next) => {
+          sport = next;
+          host.setSport(next);
+          gameInstance?.setSport(next);
+          settingsPane?.setActive(next);
+        },
+        onToggleDrawEnabled: (enabled) => host.setDrawEnabled(enabled),
+        onClearAll: () => host.clearAllDrawings(),
+        onClose: closeSettings,
+      });
+    });
+
+    const playerToolsButton = new PlayerToolsButton(this.uiRoot, togglePlayerTools);
+    const playbookButton = new PlaybookButton(this.uiRoot, togglePlaybookPane);
+
+    const wakeLock = new ScreenWakeLock();
+    void wakeLock.acquire();
+
+    const bots = new BotSwarm(host, botCount(), performance.now());
+
+    const onVisibility = (): void => {
+      const now = performance.now();
+      // A backgrounded host cannot simulate; pause cleanly instead of freezing everyone.
+      host.setPaused(document.hidden, now);
+      if (!document.hidden) this.loop?.resetClock();
+      indicator.setPaused(document.hidden);
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    // No event fires if the tab was already hidden when the game started.
+    onVisibility();
+
+    this.teardowns.push(
+      () => document.removeEventListener('visibilitychange', onVisibility),
+      () => bots.destroy(),
+      () => wakeLock.destroy(),
+      () => share?.destroy(),
+      () => indicator.destroy(),
+      () => closeSettings(),
+      () => settingsButton.destroy(),
+      () => closePlayerTools(),
+      () => playerToolsButton.destroy(),
+      () => closePlaybookPane(),
+      () => playbookButton.destroy(),
+      () => playbookView.teardown(),
+      () => {
+        for (const connection of connections.values()) connection.close();
+      },
+      () => signaling.close(),
+      () => host.destroy(),
+    );
+
+    await this.runGame(host, {
+      role: 'host',
+      initialSport: sport,
+      onGameReady: (game) => {
+        gameInstance = game;
+        game.setRoster(roster);
+        game.setArrows([...host.currentArrows]);
+        playbookView.reapply();
+      },
+      onInputReady: (im) => {
+        input = im;
+      },
+      onTick: (_dt, now) => host.step(now),
+      onFrame: (now) => {
+        host.afterFrame(now);
+        bots.update(now);
+      },
+      stats: () => ({
+        connection: 'CONNECTED' as ConnectionState,
+        tick: host.currentTick,
+        rttMs: 0,
+        sequence: 0,
+        lastAck: 0,
+        players: host.playerCount,
+        snapshots: host.snapshotCount,
+      }),
+    });
+  }
+
+  // --- Playbook studio (fully offline, no room/network involved) --------
+
+  /**
+   * Launches the coach's play designer straight from the main menu. It gets its own bare Phaser
+   * field — no NetworkHost, no InputManager/joystick, no simulation loop — so building a play has
+   * nothing to do with a live room. Saved plays land in the same localStorage library a host can
+   * later open in-room to run against whoever is connected.
+   */
+  private async runPlaybookStudio(): Promise<void> {
+    this.reset();
+
+    let playbookLibrary: Play[] = loadPlays();
+    let playbookPane: PlaybookPane | null = null;
+    let playbookEditor: PlaybookEditor | null = null;
+    let playbookInstructions: PlaybookInstructions | null = null;
+    let editorPlayers: PlaybookEditorPlayer[] = [];
+    let draftAssignments = new Map<string, PlaybookAssignment>();
+    let armedTarget: PlaybookEditorPlayer | null = null;
+    let pendingStage: PlaybookStepStage = 'start';
+    let pendingStart: { x: number; y: number } | null = null;
+    let pendingEnd: { x: number; y: number } | null = null;
+    let previewTimer: ReturnType<typeof setTimeout> | null = null;
+    let gameInstance: Game | null = null;
 
     const nextNumberForTeam = (team: TeamId): number | null => {
       const used = new Set(editorPlayers.filter((p) => p.team === team).map((p) => p.number));
@@ -356,6 +570,7 @@ export class App {
 
     const refreshEditorPlayers = (): void => {
       playbookEditor?.setPlayers(editorPlayers, armedTarget, armPlaybookPlayer, removePlaybookPlayer);
+      gameInstance?.setPlaybookEditPlayers(editorPlayers);
     };
 
     const refreshEditorPaths = (): void => {
@@ -419,6 +634,7 @@ export class App {
       playbookEditor?.setTimingDefaults(nextStartSeconds, DEFAULT_STEP_DURATION_MS / 1000);
 
       gameInstance?.setPlaybookEditMode(true, target, onPlaybookFieldTap);
+      refreshEditorPlayers();
     };
 
     const addPlaybookPlayer = (team: TeamId): void => {
@@ -433,6 +649,7 @@ export class App {
       draftAssignments.delete(teamNumberKey(target.team, target.number));
       if (armedTarget && armedTarget.team === target.team && armedTarget.number === target.number) {
         armPlaybookPlayer(null);
+        return;
       }
       refreshEditorPlayers();
       refreshEditorPaths();
@@ -562,6 +779,7 @@ export class App {
       pendingEnd = null;
       gameInstance?.setPlaybookEditMode(false, null, () => undefined);
       gameInstance?.setPlaybookEditAssignments([]);
+      gameInstance?.setPlaybookEditPlayers([]);
       gameInstance?.setPlaybookPendingPoints(null, null);
       gameInstance?.setBottomInset(0);
     };
@@ -625,10 +843,6 @@ export class App {
       closePlaybookPane();
       playbookPane = new PlaybookPane(this.uiRoot, playbookLibrary, {
         onNew: openPlaybookEditor,
-        onRun: (play) => {
-          closePlaybookPane();
-          host.runPlaybook(play);
-        },
         onExport: (play) => exportPlay(play),
         onImport: (file) => {
           void importPlayFromFile(file).then((play) => {
@@ -643,178 +857,29 @@ export class App {
           savePlays(playbookLibrary);
           playbookPane?.update(playbookLibrary);
         },
-        onClose: closePlaybookPane,
+        onClose: () => this.showHome(),
       });
     };
-
-    const togglePlaybookPane = (): void => {
-      if (playbookPane) {
-        closePlaybookPane();
-        return;
-      }
-      if (playbookEditor) {
-        closePlaybookEditor();
-        return;
-      }
-      openPlaybookPane();
-    };
-
-    const connections = new Map<string, WebRTCConnection>();
-    const configuration = buildIceConfiguration();
-    const conditions = debugConditions();
-    signaling.onMessage((message) => {
-      switch (message.type) {
-        case 'peerJoined': {
-          const peerId = message.peerId;
-          const connection = new WebRTCConnection({
-            role: 'offerer',
-            configuration,
-            conditions,
-            onLocalCandidate: (candidate) =>
-              signaling.send({ type: 'ice', to: peerId, candidate: fromCandidate(candidate) }),
-          });
-          connections.set(peerId, connection);
-
-          connection.setHandlers({
-            onStateChange: (state) => {
-              // Only admit the peer once both data channels are actually usable.
-              if (state === 'CONNECTED') host.acceptPeer(connection, performance.now());
-            },
-          });
-
-          void connection
-            .createOffer()
-            .then((offer) =>
-              signaling.send({ type: 'offer', to: peerId, sdp: fromDescription(offer) }),
-            );
-          return;
-        }
-
-        case 'answer':
-          void connections.get(message.from)?.acceptAnswer(toDescription(message.sdp));
-          return;
-
-        case 'ice':
-          void connections.get(message.from)?.addIceCandidate(toCandidate(message.candidate));
-          return;
-
-        case 'peerLeft': {
-          const connection = connections.get(message.peerId);
-          connections.delete(message.peerId);
-          // Losing a signaling socket says nothing about an established game, which is
-          // peer-to-peer. Only abandon handshakes that never finished.
-          if (connection && connection.state !== 'CONNECTED') connection.close();
-          return;
-        }
-
-        default:
-          return;
-      }
-    });
 
     clear(this.uiRoot);
 
-    const inviteUrl = buildInviteUrl(roomId, `${window.location.origin}${basePath()}`);
-    // Keep any ?debug=1 / ?bots=N flags alive across the rewrite.
-    history.replaceState(null, '', `${basePath()}/join/${roomId}${window.location.search}`);
+    // Phaser is only pulled in once a game actually starts, so the entry screens paint instantly.
+    const { Game: GameClass } = await import('../game/Game');
+    const game = new GameClass(this.gameRoot, { renderPlayers: () => [] });
+    gameInstance = game;
 
-    share = new ShareOverlay(this.uiRoot, inviteUrl);
-    share.setPlayerCount(host.playerCount);
-
-    const indicator = new ConnectionIndicator(this.uiRoot);
-    indicator.set('CONNECTED');
-
-    // Only the host chooses the field; the choice is broadcast to every connected player.
-    let sport: SportType = DEFAULT_SPORT;
-    const closeSettings = (): void => {
-      settingsPane?.destroy();
-      settingsPane = null;
-    };
-    const settingsButton = new SettingsButton(this.uiRoot, () => {
-      if (settingsPane) {
-        closeSettings();
-        return;
-      }
-      settingsPane = new SettingsPane(this.uiRoot, sport, drawEnabledForAll, {
-        onSelect: (next) => {
-          sport = next;
-          host.setSport(next);
-          gameInstance?.setSport(next);
-          settingsPane?.setActive(next);
-        },
-        onToggleDrawEnabled: (enabled) => host.setDrawEnabled(enabled),
-        onClearAll: () => host.clearAllDrawings(),
-        onClose: closeSettings,
-      });
-    });
-
-    const playerToolsButton = new PlayerToolsButton(this.uiRoot, togglePlayerTools);
-    const playbookButton = new PlaybookButton(this.uiRoot, togglePlaybookPane);
-
-    const wakeLock = new ScreenWakeLock();
-    void wakeLock.acquire();
-
-    const bots = new BotSwarm(host, botCount(), performance.now());
-
-    const onVisibility = (): void => {
-      const now = performance.now();
-      // A backgrounded host cannot simulate; pause cleanly instead of freezing everyone.
-      host.setPaused(document.hidden, now);
-      if (!document.hidden) this.loop?.resetClock();
-      indicator.setPaused(document.hidden);
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-    // No event fires if the tab was already hidden when the game started.
-    onVisibility();
+    const fullscreen = game.isFullscreenSupported
+      ? new FullscreenButton(this.uiRoot, () => game.toggleFullscreen())
+      : null;
 
     this.teardowns.push(
-      () => document.removeEventListener('visibilitychange', onVisibility),
-      () => bots.destroy(),
-      () => wakeLock.destroy(),
-      () => share?.destroy(),
-      () => indicator.destroy(),
-      () => closeSettings(),
-      () => settingsButton.destroy(),
-      () => closePlayerTools(),
-      () => playerToolsButton.destroy(),
-      () => closePlaybookPane(),
       () => closePlaybookEditor(),
-      () => playbookButton.destroy(),
-      () => playbookView.teardown(),
-      () => {
-        for (const connection of connections.values()) connection.close();
-      },
-      () => signaling.close(),
-      () => host.destroy(),
+      () => closePlaybookPane(),
+      () => fullscreen?.destroy(),
+      () => game.destroy(),
     );
 
-    await this.runGame(host, {
-      role: 'host',
-      initialSport: sport,
-      onGameReady: (game) => {
-        gameInstance = game;
-        game.setRoster(roster);
-        game.setArrows([...host.currentArrows]);
-        playbookView.reapply();
-      },
-      onInputReady: (im) => {
-        input = im;
-      },
-      onTick: (_dt, now) => host.step(now),
-      onFrame: (now) => {
-        host.afterFrame(now);
-        bots.update(now);
-      },
-      stats: () => ({
-        connection: 'CONNECTED' as ConnectionState,
-        tick: host.currentTick,
-        rttMs: 0,
-        sequence: 0,
-        lastAck: 0,
-        players: host.playerCount,
-        snapshots: host.snapshotCount,
-      }),
-    });
+    openPlaybookPane();
   }
 
   // --- Client -----------------------------------------------------------

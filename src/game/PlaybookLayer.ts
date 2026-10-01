@@ -1,9 +1,9 @@
 import type Phaser from 'phaser';
 
-import { TEAM_COLORS } from '../config/constants';
+import { TEAM_COLORS, TEAMS } from '../config/constants';
 import type { TeamId } from '../config/constants';
 import type { PlaybookAssignment, Play } from '../networking/NetworkProtocol';
-import { expectedPlaybookPosition } from './PlaybookMath';
+import { defaultPlaybookEditorPosition, expectedPlaybookPosition } from './PlaybookMath';
 
 const OTHER_ALPHA = 0.35;
 const EDIT_ALPHA = 0.6;
@@ -11,6 +11,7 @@ const MINE_ALPHA = 0.95;
 const STEP_RADIUS = 9;
 const GHOST_RADIUS = 16;
 const PENDING_RADIUS = 14;
+const PLAYER_MARKER_RADIUS = 14;
 
 export interface ArmedTarget {
   team: TeamId;
@@ -39,6 +40,7 @@ export class PlaybookLayer {
   private readonly labels: Phaser.GameObjects.Container;
 
   private editAssignments: readonly PlaybookAssignment[] = [];
+  private editPlayers: readonly ArmedTarget[] = [];
   private editMode = false;
   private armed: ArmedTarget | null = null;
   private onFieldTap: ((x: number, y: number) => void) | null = null;
@@ -75,6 +77,12 @@ export class PlaybookLayer {
   /** The full draft roster, redrawn whenever any assignment's steps change. */
   setEditAssignments(assignments: readonly PlaybookAssignment[]): void {
     this.editAssignments = assignments;
+    this.redrawPaths();
+  }
+
+  /** The coach's draft player list — shown as static markers on the field, even with no steps yet. */
+  setEditPlayers(players: readonly ArmedTarget[]): void {
+    this.editPlayers = players;
     this.redrawPaths();
   }
 
@@ -179,7 +187,34 @@ export class PlaybookLayer {
       this.drawAssignment(assignment, alpha, mine);
     }
 
+    if (this.editMode) this.drawEditPlayerMarkers(assignments);
     this.drawPendingPoints();
+  }
+
+  /** Static "home" markers for draft players with no steps yet — otherwise they're invisible. */
+  private drawEditPlayerMarkers(assignments: readonly PlaybookAssignment[]): void {
+    const hasSteps = new Set(
+      assignments.filter((a) => a.steps.length > 0).map((a) => assignmentKey(a.team, a.number)),
+    );
+    for (const team of TEAMS) {
+      const teamPlayers = this.editPlayers.filter((p) => p.team === team && !hasSteps.has(assignmentKey(p.team, p.number)));
+      teamPlayers.forEach((player, index) => {
+        const position = defaultPlaybookEditorPosition(team, index, teamPlayers.length);
+        const mine =
+          this.armed !== null && assignmentKey(this.armed.team, this.armed.number) === assignmentKey(team, player.number);
+        const color = TEAM_COLORS[team];
+
+        this.paths.lineStyle(mine ? 3 : 2, 0xffffff, mine ? 0.9 : 0.5);
+        this.paths.strokeCircle(position.x, position.y, PLAYER_MARKER_RADIUS);
+        this.paths.fillStyle(color, mine ? MINE_ALPHA : EDIT_ALPHA);
+        this.paths.fillCircle(position.x, position.y, PLAYER_MARKER_RADIUS);
+
+        const label = this.scene.add
+          .text(position.x, position.y, String(player.number), { fontSize: '13px', color: '#ffffff' })
+          .setOrigin(0.5);
+        this.labels.add(label);
+      });
+    }
   }
 
   private drawPendingPoints(): void {

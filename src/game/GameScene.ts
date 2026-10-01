@@ -32,6 +32,7 @@ export class GameScene extends Phaser.Scene {
     onFieldTap: (x: number, y: number) => void;
   } | null = null;
   private pendingPlaybookAssignments: readonly PlaybookAssignment[] = [];
+  private pendingPlaybookEditPlayers: readonly ArmedTarget[] = [];
   private pendingPlaybookPending: {
     start: { x: number; y: number } | null;
     end: { x: number; y: number } | null;
@@ -90,6 +91,12 @@ export class GameScene extends Phaser.Scene {
     this.playbookLayer?.setEditAssignments(assignments);
   }
 
+  /** The coach's draft player list — shown as static markers on the field, even with no steps yet. */
+  setPlaybookEditPlayers(players: readonly ArmedTarget[]): void {
+    this.pendingPlaybookEditPlayers = players;
+    this.playbookLayer?.setEditPlayers(players);
+  }
+
   /** The start/end points placed so far for the step the coach is currently building. */
   setPlaybookPendingPoints(
     start: { x: number; y: number } | null,
@@ -132,6 +139,7 @@ export class GameScene extends Phaser.Scene {
       );
     }
     this.playbookLayer.setEditAssignments(this.pendingPlaybookAssignments);
+    this.playbookLayer.setEditPlayers(this.pendingPlaybookEditPlayers);
     if (this.pendingPlaybookPending) {
       this.playbookLayer.setPendingPoints(
         this.pendingPlaybookPending.start,
