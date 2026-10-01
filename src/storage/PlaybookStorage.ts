@@ -31,13 +31,18 @@ export function savePlays(plays: readonly Play[]): void {
   }
 }
 
+/** Shared with the video exporter so a play's name becomes a safe filename either way. */
+export function sanitizeFilename(name: string): string {
+  return name.replace(/[^a-z0-9-_]+/gi, '_') || 'play';
+}
+
 /** Downloads one play as a JSON file, so a coach can hand it to another device over any channel. */
 export function exportPlay(play: Play): void {
   const blob = new Blob([JSON.stringify(play, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `${play.name.replace(/[^a-z0-9-_]+/gi, '_') || 'play'}.json`;
+  link.download = `${sanitizeFilename(play.name)}.json`;
   link.click();
   URL.revokeObjectURL(url);
 }

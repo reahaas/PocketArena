@@ -1,10 +1,15 @@
 import { SIGNALING_URL } from '../config/config';
 import {
   DEFAULT_SPORT,
-  DEFAULT_WAYPOINT_INTERVAL_MS,
+  DEFAULT_STEP_DURATION_MS,
   INPUT_INTERVAL_MS,
   MAX_CATCHUP_TICKS,
-  MAX_WAYPOINTS_PER_ASSIGNMENT,
+  MAX_PLAYBOOK_PLAYERS_PER_TEAM,
+  MAX_STEPS_PER_ASSIGNMENT,
+  NUMBER_MAX,
+  NUMBER_MIN,
+  PLAYBOOK_EXPORT_FPS,
+  PLAYBOOK_EXPORT_TAIL_MS,
   PLAYBOOK_MAX_DURATION_MS,
   SIM_TICK_MS,
 } from '../config/constants';
@@ -14,6 +19,7 @@ import type { Game } from '../game/Game';
 import { GameLoop } from '../game/GameLoop';
 import type { GameSession } from '../game/RenderPlayer';
 import { InputManager } from '../input/InputManager';
+import { recordCanvasToVideo, downloadBlob } from '../media/PlaybookVideoExport';
 import { NetworkClient } from '../networking/NetworkClient';
 import { NetworkHost } from '../networking/NetworkHost';
 import type {
@@ -30,7 +36,13 @@ import type { ConnectionState } from '../networking/transport/Transport';
 import { WebRTCConnection } from '../networking/transport/WebRTCConnection';
 import { basePath, buildInviteUrl, parseJoinPath } from '../room/InviteLink';
 import { generatePlayerId } from '../room/RoomId';
-import { exportPlay, importPlayFromFile, loadPlays, savePlays } from '../storage/PlaybookStorage';
+import {
+  exportPlay,
+  importPlayFromFile,
+  loadPlays,
+  sanitizeFilename,
+  savePlays,
+} from '../storage/PlaybookStorage';
 import { ConnectionIndicator } from '../ui/ConnectionIndicator';
 import { DebugOverlay, botCount, isDebugEnabled } from '../ui/DebugOverlay';
 import { FullscreenButton } from '../ui/FullscreenButton';
@@ -40,7 +52,9 @@ import { renderMessageScreen } from '../ui/MessageScreen';
 import { NumberPane } from '../ui/NumberPane';
 import { PlaybookButton } from '../ui/PlaybookButton';
 import { PlaybookCountdownOverlay } from '../ui/PlaybookCountdownOverlay';
+import type { PlaybookEditorPlayer, PlaybookStepStage } from '../ui/PlaybookEditor';
 import { PlaybookEditor, teamNumberKey } from '../ui/PlaybookEditor';
+import { PlaybookInstructions } from '../ui/PlaybookInstructions';
 import { PlaybookPane } from '../ui/PlaybookPane';
 import { PlaybookResultsPane } from '../ui/PlaybookResultsPane';
 import { PlayerToolsButton } from '../ui/PlayerToolsButton';
@@ -232,8 +246,14 @@ export class App {
     let playbookLibrary: Play[] = loadPlays();
     let playbookPane: PlaybookPane | null = null;
     let playbookEditor: PlaybookEditor | null = null;
+    let playbookInstructions: PlaybookInstructions | null = null;
+    let editorPlayers: PlaybookEditorPlayer[] = [];
     let draftAssignments = new Map<string, PlaybookAssignment>();
-    let armedTarget: { team: TeamId; number: number } | null = null;
+    let armedTarget: PlaybookEditorPlayer | null = null;
+    let pendingStage: PlaybookStepStage = 'start';
+    let pendingStart: { x: number; y: number } | null = null;
+    let pendingEnd: { x: number; y: number } | null = null;
+    let previewTimer: ReturnType<typeof setTimeout> | null = null;
 
     const host = new NetworkHost({
       // Event-driven so the counter stays correct even while the tab is backgrounded.
@@ -322,63 +342,228 @@ export class App {
     };
 
     // --- Playbook (host-only editor + library) ---------------------------
+    // The editor's roster is independent of who is actually connected — the coach designs a
+    // play (any mix of team sizes) offline, then runs it against whoever is in the room later.
 
-    const waypointSummary = (target: { team: TeamId; number: number } | null): string => {
-      if (!target) return 'Tap a player, then tap the field to place their path.';
-      const count = draftAssignments.get(teamNumberKey(target.team, target.number))?.waypoints.length ?? 0;
-      return `#${target.number}: ${count} waypoint${count === 1 ? '' : 's'} placed.`;
+    const nextNumberForTeam = (team: TeamId): number | null => {
+      const used = new Set(editorPlayers.filter((p) => p.team === team).map((p) => p.number));
+      if (used.size >= MAX_PLAYBOOK_PLAYERS_PER_TEAM) return null;
+      for (let number = NUMBER_MIN; number <= NUMBER_MAX; number++) {
+        if (!used.has(number)) return number;
+      }
+      return null;
+    };
+
+    const refreshEditorPlayers = (): void => {
+      playbookEditor?.setPlayers(editorPlayers, armedTarget, armPlaybookPlayer, removePlaybookPlayer);
     };
 
     const refreshEditorPaths = (): void => {
-      const assignments = [...draftAssignments.values()].filter((a) => a.waypoints.length > 0);
+      const assignments = [...draftAssignments.values()].filter((a) => a.steps.length > 0);
       gameInstance?.setPlaybookEditAssignments(assignments);
     };
 
-    const armPlaybookPlayer = (target: { team: TeamId; number: number } | null): void => {
-      armedTarget = target;
-      playbookEditor?.setArmed(target);
-      playbookEditor?.setSummary(waypointSummary(target));
-      gameInstance?.setPlaybookEditMode(true, target, onPlaybookWaypointPlaced);
+    const lastStepOf = (target: PlaybookEditorPlayer) => {
+      const steps = draftAssignments.get(teamNumberKey(target.team, target.number))?.steps ?? [];
+      if (steps.length === 0) return null;
+      return [...steps].sort((a, b) => a.startMs - b.startMs)[steps.length - 1]!;
     };
 
-    const onPlaybookWaypointPlaced = (x: number, y: number): void => {
+    const stepSummary = (target: PlaybookEditorPlayer | null): string => {
+      if (!target) return 'Add a player, then arm them to start placing steps.';
+      const steps = draftAssignments.get(teamNumberKey(target.team, target.number))?.steps ?? [];
+      if (steps.length === 0) return `#${target.number}: no steps yet — tap the field to set Start, then End.`;
+      const totalMs = Math.max(...steps.map((s) => s.startMs + s.durationMs));
+      return `#${target.number}: ${steps.length} step${steps.length === 1 ? '' : 's'} · ${(totalMs / 1000).toFixed(1)}s total.`;
+    };
+
+    const refreshPendingUI = (): void => {
+      playbookEditor?.setStage(pendingStage);
+      playbookEditor?.setPendingReadout(pendingStart, pendingEnd);
+      playbookEditor?.setCanAddStep(pendingStart !== null && pendingEnd !== null);
+      gameInstance?.setPlaybookPendingPoints(pendingStart, pendingEnd);
+    };
+
+    const resetPending = (prefillStart: { x: number; y: number } | null): void => {
+      pendingStage = prefillStart ? 'end' : 'start';
+      pendingStart = prefillStart;
+      pendingEnd = null;
+      refreshPendingUI();
+    };
+
+    const onPlaybookFieldTap = (x: number, y: number): void => {
       if (!armedTarget) return;
+      if (pendingStage === 'start') {
+        pendingStart = { x, y };
+        pendingStage = 'end';
+      } else {
+        pendingEnd = { x, y };
+      }
+      refreshPendingUI();
+    };
+
+    const setPlaybookStage = (stage: PlaybookStepStage): void => {
+      pendingStage = stage;
+      refreshPendingUI();
+    };
+
+    const armPlaybookPlayer = (target: PlaybookEditorPlayer | null): void => {
+      armedTarget = target;
+      playbookEditor?.setArmed(target);
+      playbookEditor?.setSummary(stepSummary(target));
+      playbookEditor?.setStatus('');
+
+      const last = target ? lastStepOf(target) : null;
+      resetPending(last ? { x: last.toX, y: last.toY } : null);
+      const nextStartSeconds = last ? (last.startMs + last.durationMs) / 1000 : 0;
+      playbookEditor?.setTimingDefaults(nextStartSeconds, DEFAULT_STEP_DURATION_MS / 1000);
+
+      gameInstance?.setPlaybookEditMode(true, target, onPlaybookFieldTap);
+    };
+
+    const addPlaybookPlayer = (team: TeamId): void => {
+      const number = nextNumberForTeam(team);
+      if (number === null) return;
+      editorPlayers = [...editorPlayers, { team, number }];
+      refreshEditorPlayers();
+    };
+
+    const removePlaybookPlayer = (target: PlaybookEditorPlayer): void => {
+      editorPlayers = editorPlayers.filter((p) => !(p.team === target.team && p.number === target.number));
+      draftAssignments.delete(teamNumberKey(target.team, target.number));
+      if (armedTarget && armedTarget.team === target.team && armedTarget.number === target.number) {
+        armPlaybookPlayer(null);
+      }
+      refreshEditorPlayers();
+      refreshEditorPaths();
+    };
+
+    const addPlaybookStep = (startSeconds: number, durationSeconds: number): void => {
+      if (!armedTarget || !pendingStart || !pendingEnd) return;
       const key = teamNumberKey(armedTarget.team, armedTarget.number);
       let assignment = draftAssignments.get(key);
       if (!assignment) {
-        assignment = { team: armedTarget.team, number: armedTarget.number, waypoints: [] };
+        assignment = { team: armedTarget.team, number: armedTarget.number, steps: [] };
         draftAssignments.set(key, assignment);
       }
-      if (assignment.waypoints.length >= MAX_WAYPOINTS_PER_ASSIGNMENT) return;
-      assignment.waypoints.push({
-        x,
-        y,
-        atMs: assignment.waypoints.length * DEFAULT_WAYPOINT_INTERVAL_MS,
+      if (assignment.steps.length >= MAX_STEPS_PER_ASSIGNMENT) {
+        playbookEditor?.setStatus('This player already has the maximum number of steps.');
+        return;
+      }
+
+      const startMs = clamp(Math.round(startSeconds * 1000), 0, PLAYBOOK_MAX_DURATION_MS);
+      const durationMs = clamp(Math.round(durationSeconds * 1000), 100, PLAYBOOK_MAX_DURATION_MS);
+      assignment.steps.push({
+        startMs,
+        durationMs,
+        fromX: pendingStart.x,
+        fromY: pendingStart.y,
+        toX: pendingEnd.x,
+        toY: pendingEnd.y,
       });
+
       refreshEditorPaths();
-      playbookEditor?.setSummary(waypointSummary(armedTarget));
+      playbookEditor?.setSummary(stepSummary(armedTarget));
+      playbookEditor?.setStatus('Step added.');
+      resetPending({ x: pendingEnd.x, y: pendingEnd.y });
+      playbookEditor?.setTimingDefaults((startMs + durationMs) / 1000, durationSeconds || DEFAULT_STEP_DURATION_MS / 1000);
     };
 
-    const undoPlaybookWaypoint = (): void => {
+    const undoPlaybookStep = (): void => {
       if (!armedTarget) return;
-      draftAssignments.get(teamNumberKey(armedTarget.team, armedTarget.number))?.waypoints.pop();
+      const steps = draftAssignments.get(teamNumberKey(armedTarget.team, armedTarget.number))?.steps;
+      steps?.sort((a, b) => a.startMs - b.startMs).pop();
       refreshEditorPaths();
-      playbookEditor?.setSummary(waypointSummary(armedTarget));
+      playbookEditor?.setSummary(stepSummary(armedTarget));
     };
 
     const clearPlaybookPath = (): void => {
       if (!armedTarget) return;
-      draftAssignments.get(teamNumberKey(armedTarget.team, armedTarget.number))?.waypoints.splice(0);
+      draftAssignments.get(teamNumberKey(armedTarget.team, armedTarget.number))?.steps.splice(0);
       refreshEditorPaths();
-      playbookEditor?.setSummary(waypointSummary(armedTarget));
+      playbookEditor?.setSummary(stepSummary(armedTarget));
+      resetPending(null);
+      playbookEditor?.setTimingDefaults(0, DEFAULT_STEP_DURATION_MS / 1000);
+    };
+
+    const stopPlaybookPreview = (): void => {
+      if (previewTimer !== null) {
+        clearTimeout(previewTimer);
+        previewTimer = null;
+      }
+      gameInstance?.setPlaybookPreview(null, null);
+    };
+
+    const buildDraftPlay = (name: string): Play | null => {
+      const assignments = [...draftAssignments.values()].filter((a) => a.steps.length > 0);
+      if (assignments.length === 0) return null;
+      const maxEndMs = Math.max(...assignments.flatMap((a) => a.steps.map((s) => s.startMs + s.durationMs)));
+      const durationMs = clamp(maxEndMs, DEFAULT_STEP_DURATION_MS, PLAYBOOK_MAX_DURATION_MS);
+      return { id: generatePlayerId(), name: name || 'Untitled Play', durationMs, assignments };
+    };
+
+    const startPlaybookPreview = (record: boolean): void => {
+      const play = buildDraftPlay(playbookEditor?.nameInput.value.trim() ?? '');
+      if (!play) {
+        playbookEditor?.setStatus('Add at least one step before previewing.');
+        return;
+      }
+
+      stopPlaybookPreview();
+      const startAtMs = performance.now();
+      gameInstance?.setPlaybookPreview(play, startAtMs);
+      const totalMs = play.durationMs + PLAYBOOK_EXPORT_TAIL_MS;
+
+      if (!record) {
+        playbookEditor?.setStatus('Previewing...');
+        previewTimer = setTimeout(() => {
+          stopPlaybookPreview();
+          playbookEditor?.setStatus('');
+        }, totalMs);
+        return;
+      }
+
+      const canvas = gameInstance?.canvasElement;
+      if (!canvas) {
+        stopPlaybookPreview();
+        playbookEditor?.setStatus('Video export is not supported on this device.');
+        return;
+      }
+
+      playbookEditor?.setStatus('Recording video...');
+      void recordCanvasToVideo(canvas, totalMs, PLAYBOOK_EXPORT_FPS).then((blob) => {
+        stopPlaybookPreview();
+        if (!blob) {
+          playbookEditor?.setStatus('Video export is not supported on this device.');
+          return;
+        }
+        downloadBlob(blob, `${sanitizeFilename(play.name)}.webm`);
+        playbookEditor?.setStatus('Video saved — share it to show friends the play.');
+      });
+    };
+
+    const closePlaybookInstructions = (): void => {
+      playbookInstructions?.destroy();
+      playbookInstructions = null;
+    };
+
+    const openPlaybookInstructions = (): void => {
+      closePlaybookInstructions();
+      playbookInstructions = new PlaybookInstructions(this.uiRoot, closePlaybookInstructions);
     };
 
     const closePlaybookEditor = (): void => {
+      stopPlaybookPreview();
+      closePlaybookInstructions();
       playbookEditor?.destroy();
       playbookEditor = null;
       armedTarget = null;
+      pendingStart = null;
+      pendingEnd = null;
       gameInstance?.setPlaybookEditMode(false, null, () => undefined);
       gameInstance?.setPlaybookEditAssignments([]);
+      gameInstance?.setPlaybookPendingPoints(null, null);
+      gameInstance?.setBottomInset(0);
     };
 
     const closePlaybookPane = (): void => {
@@ -389,40 +574,45 @@ export class App {
     const openPlaybookEditor = (): void => {
       closePlaybookPane();
       closePlaybookEditor();
+      editorPlayers = [];
       draftAssignments = new Map();
       armedTarget = null;
-      playbookEditor = new PlaybookEditor(
-        this.uiRoot,
-        roster.map((entry) => ({ team: entry.team, number: entry.number })),
-        {
-          onArm: armPlaybookPlayer,
-          onUndo: undoPlaybookWaypoint,
-          onClearArmed: clearPlaybookPath,
-          onSave: (name) => savePlaybookDraft(name),
-          onCancel: () => {
-            closePlaybookEditor();
-            openPlaybookPane();
-          },
+      pendingStage = 'start';
+      pendingStart = null;
+      pendingEnd = null;
+
+      playbookEditor = new PlaybookEditor(this.uiRoot, {
+        onAddPlayer: addPlaybookPlayer,
+        onRemovePlayer: removePlaybookPlayer,
+        onArm: armPlaybookPlayer,
+        onSetStage: setPlaybookStage,
+        onAddStep: addPlaybookStep,
+        onUndoStep: undoPlaybookStep,
+        onClearPath: clearPlaybookPath,
+        onSave: (name) => savePlaybookDraft(name),
+        onPreview: () => startPlaybookPreview(false),
+        onExportVideo: () => startPlaybookPreview(true),
+        onHelp: openPlaybookInstructions,
+        onCancel: () => {
+          closePlaybookEditor();
+          openPlaybookPane();
         },
-      );
-      gameInstance?.setPlaybookEditMode(true, null, onPlaybookWaypointPlaced);
+        onHeightChange: (heightPx) => gameInstance?.setBottomInset(heightPx),
+      });
+
+      refreshEditorPlayers();
+      refreshEditorPaths();
+      playbookEditor.setTimingDefaults(0, DEFAULT_STEP_DURATION_MS / 1000);
+      gameInstance?.setPlaybookEditMode(true, null, onPlaybookFieldTap);
       gameInstance?.setPlaybookEditAssignments([]);
     };
 
     const savePlaybookDraft = (name: string): void => {
-      const assignments = [...draftAssignments.values()].filter((a) => a.waypoints.length > 0);
-      if (assignments.length === 0) {
-        playbookEditor?.setSummary('Add at least one waypoint before saving.');
+      const play = buildDraftPlay(name);
+      if (!play) {
+        playbookEditor?.setStatus('Add at least one step before saving.');
         return;
       }
-
-      const maxAtMs = Math.max(...assignments.flatMap((a) => a.waypoints.map((w) => w.atMs)));
-      const durationMs = clamp(
-        maxAtMs + DEFAULT_WAYPOINT_INTERVAL_MS,
-        DEFAULT_WAYPOINT_INTERVAL_MS,
-        PLAYBOOK_MAX_DURATION_MS,
-      );
-      const play: Play = { id: generatePlayerId(), name: name || 'Untitled Play', durationMs, assignments };
 
       playbookLibrary = [play, ...playbookLibrary];
       savePlays(playbookLibrary);

@@ -3,7 +3,7 @@ import {
   MAX_PLAYBOOK_ASSIGNMENTS,
   MAX_PLAYBOOK_NAME_LENGTH,
   MAX_PLAYERS,
-  MAX_WAYPOINTS_PER_ASSIGNMENT,
+  MAX_STEPS_PER_ASSIGNMENT,
   NUMBER_MAX,
   NUMBER_MIN,
   PLAYBOOK_MAX_DURATION_MS,
@@ -45,18 +45,21 @@ export interface DrawArrow {
   y2: number;
 }
 
-/** A single stop on a player's assigned path. `atMs` is elapsed time since the play started. */
-export interface PlaybookWaypoint {
-  x: number;
-  y: number;
-  atMs: number;
+/** One player movement: from `(fromX,fromY)` to `(toX,toY)`, running `startMs..startMs+durationMs`. */
+export interface PlaybookStep {
+  startMs: number;
+  durationMs: number;
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
 }
 
 /** What one roster slot (identified by team+number, not playerId) is supposed to do. */
 export interface PlaybookAssignment {
   team: TeamId;
   number: number;
-  waypoints: PlaybookWaypoint[];
+  steps: PlaybookStep[];
 }
 
 /** A coach-authored play. `durationMs` bounds how long grading runs before results are shown. */
@@ -220,11 +223,25 @@ function parseArrows(value: unknown): DrawArrow[] | null {
   return arrows;
 }
 
-function parseWaypoint(value: unknown): PlaybookWaypoint | null {
+function parseStep(value: unknown): PlaybookStep | null {
   if (!isRecord(value)) return null;
-  const atMs = sanitizeNumber(value.atMs, -1);
-  if (!Number.isFinite(atMs) || atMs < 0 || atMs > PLAYBOOK_MAX_DURATION_MS) return null;
-  return { x: sanitizeNumber(value.x), y: sanitizeNumber(value.y), atMs };
+
+  const startMs = sanitizeNumber(value.startMs, -1);
+  if (!Number.isFinite(startMs) || startMs < 0 || startMs > PLAYBOOK_MAX_DURATION_MS) return null;
+
+  const durationMs = sanitizeNumber(value.durationMs, -1);
+  if (!Number.isFinite(durationMs) || durationMs <= 0 || durationMs > PLAYBOOK_MAX_DURATION_MS) {
+    return null;
+  }
+
+  return {
+    startMs,
+    durationMs,
+    fromX: sanitizeNumber(value.fromX),
+    fromY: sanitizeNumber(value.fromY),
+    toX: sanitizeNumber(value.toX),
+    toY: sanitizeNumber(value.toY),
+  };
 }
 
 function parseAssignment(value: unknown): PlaybookAssignment | null {
@@ -232,17 +249,17 @@ function parseAssignment(value: unknown): PlaybookAssignment | null {
   const team = parseTeam(value.team);
   const number = parseJerseyNumber(value.number);
   if (!team || number === null) return null;
-  if (!Array.isArray(value.waypoints) || value.waypoints.length > MAX_WAYPOINTS_PER_ASSIGNMENT) {
+  if (!Array.isArray(value.steps) || value.steps.length > MAX_STEPS_PER_ASSIGNMENT) {
     return null;
   }
 
-  const waypoints: PlaybookWaypoint[] = [];
-  for (const entry of value.waypoints) {
-    const waypoint = parseWaypoint(entry);
-    if (!waypoint) return null;
-    waypoints.push(waypoint);
+  const steps: PlaybookStep[] = [];
+  for (const entry of value.steps) {
+    const step = parseStep(entry);
+    if (!step) return null;
+    steps.push(step);
   }
-  return { team, number, waypoints };
+  return { team, number, steps };
 }
 
 export function parsePlay(value: unknown): Play | null {

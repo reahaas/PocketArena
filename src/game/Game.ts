@@ -11,8 +11,12 @@ export class Game {
   private readonly game: Phaser.Game;
   private readonly scene = new GameScene();
   private readonly stopWatchingViewport: () => void;
+  private readonly parent: HTMLElement;
+  private lastViewport = { width: 0, height: 0 };
+  private bottomInsetPx = 0;
 
   constructor(parent: HTMLElement, bridge: SceneBridge, initialSport: SportType = DEFAULT_SPORT) {
+    this.parent = parent;
     this.scene.setBridge(bridge);
     this.scene.setSport(initialSport);
 
@@ -40,11 +44,32 @@ export class Game {
     // pre-rotation size. Feeding it the visual viewport directly is what keeps the board
     // full-screen through rotation and fullscreen toggles.
     this.stopWatchingViewport = watchViewport((width, height) => {
-      parent.style.width = `${width}px`;
-      parent.style.height = `${height}px`;
-      this.game.scale.setParentSize(width, height);
-      this.game.scale.refresh();
+      this.lastViewport = { width, height };
+      this.applyViewportSize();
     });
+  }
+
+  private applyViewportSize(): void {
+    const { width, height } = this.lastViewport;
+    if (width <= 0 || height <= 0) return;
+    // Reserving space at the bottom (e.g. for the docked playbook editor) shrinks the board
+    // instead of letting a panel cover it — the whole field stays visible and operable.
+    const usableHeight = Math.max(1, height - this.bottomInsetPx);
+    this.parent.style.width = `${width}px`;
+    this.parent.style.height = `${usableHeight}px`;
+    this.game.scale.setParentSize(width, usableHeight);
+    this.game.scale.refresh();
+  }
+
+  /** Reserves viewport height at the bottom of the field so a docked panel never overlaps it. */
+  setBottomInset(px: number): void {
+    this.bottomInsetPx = Math.max(0, px);
+    this.applyViewportSize();
+  }
+
+  /** The live Phaser canvas — used to record a playbook preview to a shareable video file. */
+  get canvasElement(): HTMLCanvasElement {
+    return this.game.canvas;
   }
 
   /** Exposed so end-to-end tests can assert the board never scrolls. */
@@ -72,18 +97,26 @@ export class Game {
     this.scene.setDrawMode(enabled, onArrowDrawn);
   }
 
-  /** Host-only: arms a player for tap-to-place waypoint editing in the playbook editor. */
+  /** Host-only: arms a player for tap-to-place step editing in the playbook editor. */
   setPlaybookEditMode(
     enabled: boolean,
     armed: ArmedTarget | null,
-    onWaypointPlaced: (x: number, y: number) => void,
+    onFieldTap: (x: number, y: number) => void,
   ): void {
-    this.scene.setPlaybookEditMode(enabled, armed, onWaypointPlaced);
+    this.scene.setPlaybookEditMode(enabled, armed, onFieldTap);
   }
 
-  /** The full draft roster being edited, redrawn whenever any assignment's path changes. */
+  /** The full draft roster being edited, redrawn whenever any assignment's steps change. */
   setPlaybookEditAssignments(assignments: readonly PlaybookAssignment[]): void {
     this.scene.setPlaybookEditAssignments(assignments);
+  }
+
+  /** The start/end points placed so far for the step the coach is currently building. */
+  setPlaybookPendingPoints(
+    start: { x: number; y: number } | null,
+    end: { x: number; y: number } | null,
+  ): void {
+    this.scene.setPlaybookPendingPoints(start, end);
   }
 
   /** Shows (or, with `play: null`, hides) a launched play's paths for every connected player. */
@@ -94,6 +127,11 @@ export class Game {
   /** Local-clock time grading begins; `null` while only the path (not the ghost target) shows. */
   setPlaybookLiveStart(startAtLocalMs: number | null): void {
     this.scene.setPlaybookLiveStart(startAtLocalMs);
+  }
+
+  /** Coach-only: plays every assignment's ghost together, with no live session required. */
+  setPlaybookPreview(play: Play | null, startAtLocalMs: number | null): void {
+    this.scene.setPlaybookPreview(play, startAtLocalMs);
   }
 
   get isFullscreenSupported(): boolean {

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_INPUT_DT,
   MAX_PLAYERS,
-  MAX_WAYPOINTS_PER_ASSIGNMENT,
+  MAX_STEPS_PER_ASSIGNMENT,
   PLAYBOOK_MAX_DURATION_MS,
   WS_MSG_MAX_BYTES,
 } from '../src/config/constants';
@@ -228,9 +228,8 @@ describe('playbook message validation', () => {
       {
         team: 'A',
         number: 7,
-        waypoints: [
-          { x: 0, y: 0, atMs: 0 },
-          { x: 10, y: 10, atMs: 1500 },
+        steps: [
+          { startMs: 0, durationMs: 1500, fromX: 0, fromY: 0, toX: 10, toY: 10 },
         ],
       },
     ],
@@ -253,29 +252,51 @@ describe('playbook message validation', () => {
     }
   });
 
-  it('rejects a play with too many waypoints on one assignment', () => {
-    const waypoints = Array.from({ length: MAX_WAYPOINTS_PER_ASSIGNMENT + 1 }, (_, i) => ({
-      x: 0,
-      y: 0,
-      atMs: i * 10,
+  it('rejects a play with too many steps on one assignment', () => {
+    const steps = Array.from({ length: MAX_STEPS_PER_ASSIGNMENT + 1 }, (_, i) => ({
+      startMs: i * 10,
+      durationMs: 10,
+      fromX: 0,
+      fromY: 0,
+      toX: 1,
+      toY: 1,
     }));
-    const bad = { ...play, assignments: [{ team: 'A', number: 7, waypoints }] };
+    const bad = { ...play, assignments: [{ team: 'A', number: 7, steps }] };
     expect(parsePlay(bad)).toBeNull();
   });
 
-  it('rejects a waypoint with a non-finite or out-of-range atMs', () => {
+  it('rejects a step with a non-finite or out-of-range startMs/durationMs', () => {
     const bad1 = {
       ...play,
-      assignments: [{ team: 'A', number: 7, waypoints: [{ x: 0, y: 0, atMs: Number.NaN }] }],
+      assignments: [
+        {
+          team: 'A',
+          number: 7,
+          steps: [{ startMs: Number.NaN, durationMs: 1000, fromX: 0, fromY: 0, toX: 1, toY: 1 }],
+        },
+      ],
     };
     const bad2 = {
       ...play,
       assignments: [
-        { team: 'A', number: 7, waypoints: [{ x: 0, y: 0, atMs: PLAYBOOK_MAX_DURATION_MS + 1 }] },
+        {
+          team: 'A',
+          number: 7,
+          steps: [
+            { startMs: PLAYBOOK_MAX_DURATION_MS + 1, durationMs: 1000, fromX: 0, fromY: 0, toX: 1, toY: 1 },
+          ],
+        },
+      ],
+    };
+    const bad3 = {
+      ...play,
+      assignments: [
+        { team: 'A', number: 7, steps: [{ startMs: 0, durationMs: 0, fromX: 0, fromY: 0, toX: 1, toY: 1 }] },
       ],
     };
     expect(parsePlay(bad1)).toBeNull();
     expect(parsePlay(bad2)).toBeNull();
+    expect(parsePlay(bad3)).toBeNull();
   });
 
   it('rejects an assignment with an unknown team or out-of-range number', () => {

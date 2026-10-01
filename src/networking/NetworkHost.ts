@@ -27,7 +27,7 @@ import type {
   HostMessage,
   NetPlayer,
   PlaybookGrade,
-  PlaybookWaypoint,
+  PlaybookStep,
   Play,
   ReservedNumber,
   RosterEntry,
@@ -50,7 +50,7 @@ interface GradeAccumulator {
   number: number;
   /** Snapshotted when the run starts — a mid-run jersey swap should not change who is graded. */
   playerId: PlayerId | null;
-  waypoints: PlaybookWaypoint[];
+  steps: PlaybookStep[];
   totalErrorPx: number;
   samples: number;
 }
@@ -234,7 +234,7 @@ export class NetworkHost implements GameSession {
         team: assignment.team,
         number: assignment.number,
         playerId: this.findPlayerIdFor(assignment.team, assignment.number),
-        waypoints: assignment.waypoints,
+        steps: assignment.steps,
         totalErrorPx: 0,
         samples: 0,
       })),
@@ -534,7 +534,7 @@ export class NetworkHost implements GameSession {
     for (const accumulator of run.accumulators) {
       if (!accumulator.playerId) continue;
       const actual = this.simulation.getPlayer(accumulator.playerId);
-      const expected = expectedPlaybookPosition(accumulator.waypoints, elapsedMs);
+      const expected = expectedPlaybookPosition(accumulator.steps, elapsedMs);
       if (!actual || !expected) continue;
 
       accumulator.totalErrorPx += Math.hypot(actual.x - expected.x, actual.y - expected.y);

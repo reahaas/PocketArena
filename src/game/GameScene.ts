@@ -29,15 +29,20 @@ export class GameScene extends Phaser.Scene {
   private pendingPlaybookEdit: {
     enabled: boolean;
     armed: ArmedTarget | null;
-    onWaypointPlaced: (x: number, y: number) => void;
+    onFieldTap: (x: number, y: number) => void;
   } | null = null;
   private pendingPlaybookAssignments: readonly PlaybookAssignment[] = [];
+  private pendingPlaybookPending: {
+    start: { x: number; y: number } | null;
+    end: { x: number; y: number } | null;
+  } | null = null;
   private pendingPlaybookLive: {
     play: Play | null;
     localTeam: TeamId | null;
     localNumber: number | null;
   } | null = null;
   private pendingPlaybookStart: number | null = null;
+  private pendingPlaybookPreview: { play: Play | null; startAtLocalMs: number | null } | null = null;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -74,15 +79,24 @@ export class GameScene extends Phaser.Scene {
   setPlaybookEditMode(
     enabled: boolean,
     armed: ArmedTarget | null,
-    onWaypointPlaced: (x: number, y: number) => void,
+    onFieldTap: (x: number, y: number) => void,
   ): void {
-    this.pendingPlaybookEdit = { enabled, armed, onWaypointPlaced };
-    this.playbookLayer?.setEditMode(enabled, armed, onWaypointPlaced);
+    this.pendingPlaybookEdit = { enabled, armed, onFieldTap };
+    this.playbookLayer?.setEditMode(enabled, armed, onFieldTap);
   }
 
   setPlaybookEditAssignments(assignments: readonly PlaybookAssignment[]): void {
     this.pendingPlaybookAssignments = assignments;
     this.playbookLayer?.setEditAssignments(assignments);
+  }
+
+  /** The start/end points placed so far for the step the coach is currently building. */
+  setPlaybookPendingPoints(
+    start: { x: number; y: number } | null,
+    end: { x: number; y: number } | null,
+  ): void {
+    this.pendingPlaybookPending = { start, end };
+    this.playbookLayer?.setPendingPoints(start, end);
   }
 
   setPlaybookLiveView(play: Play | null, localTeam: TeamId | null, localNumber: number | null): void {
@@ -93,6 +107,12 @@ export class GameScene extends Phaser.Scene {
   setPlaybookLiveStart(startAtLocalMs: number | null): void {
     this.pendingPlaybookStart = startAtLocalMs;
     this.playbookLayer?.setLiveStart(startAtLocalMs);
+  }
+
+  /** Coach-only: animates every assignment's ghost together, independent of any live session. */
+  setPlaybookPreview(play: Play | null, startAtLocalMs: number | null): void {
+    this.pendingPlaybookPreview = { play, startAtLocalMs };
+    this.playbookLayer?.setPreview(play, startAtLocalMs);
   }
 
   create(): void {
@@ -108,10 +128,16 @@ export class GameScene extends Phaser.Scene {
       this.playbookLayer.setEditMode(
         this.pendingPlaybookEdit.enabled,
         this.pendingPlaybookEdit.armed,
-        this.pendingPlaybookEdit.onWaypointPlaced,
+        this.pendingPlaybookEdit.onFieldTap,
       );
     }
     this.playbookLayer.setEditAssignments(this.pendingPlaybookAssignments);
+    if (this.pendingPlaybookPending) {
+      this.playbookLayer.setPendingPoints(
+        this.pendingPlaybookPending.start,
+        this.pendingPlaybookPending.end,
+      );
+    }
     if (this.pendingPlaybookLive) {
       this.playbookLayer.setLiveView(
         this.pendingPlaybookLive.play,
@@ -120,6 +146,12 @@ export class GameScene extends Phaser.Scene {
       );
     }
     this.playbookLayer.setLiveStart(this.pendingPlaybookStart);
+    if (this.pendingPlaybookPreview) {
+      this.playbookLayer.setPreview(
+        this.pendingPlaybookPreview.play,
+        this.pendingPlaybookPreview.startAtLocalMs,
+      );
+    }
     this.cameras.main.setBackgroundColor('#020617');
   }
 

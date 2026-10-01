@@ -94,9 +94,11 @@ export const MIN_ARROW_LENGTH_PX = 20;
 // --- Playbook (coach-designed, auto-graded plays) --------------------------
 /** One assignment per roster slot is the practical ceiling; keeps payloads bounded. */
 export const MAX_PLAYBOOK_ASSIGNMENTS = MAX_PLAYERS;
-export const MAX_WAYPOINTS_PER_ASSIGNMENT = 12;
+export const MAX_STEPS_PER_ASSIGNMENT = 12;
 export const MAX_PLAYBOOK_NAME_LENGTH = 40;
 export const MAX_SAVED_PLAYS = 30;
+/** The editor's roster is independent of who is actually connected (spec-equivalent, new). */
+export const MAX_PLAYBOOK_PLAYERS_PER_TEAM = 11;
 /** Countdown shown to every player between "launch" and the play actually starting. */
 export const PLAYBOOK_COUNTDOWN_MS = 3_000;
 /** A play longer than this would make "practice it" tedious; also bounds host-side run state. */
@@ -105,5 +107,9 @@ export const PLAYBOOK_MAX_DURATION_MS = 60_000;
 export const PLAYBOOK_ACCURACY_SAMPLE_MS = 200;
 /** Distance (px) at which accuracy bottoms out at 0% — roughly half the arena width. */
 export const PLAYBOOK_ACCURACY_MAX_DISTANCE_PX = 220;
-/** Spacing the editor gives each newly-placed waypoint when the coach does not set one. */
-export const DEFAULT_WAYPOINT_INTERVAL_MS = 1_500;
+/** Default length the editor gives a newly-added step when the coach does not set one. */
+export const DEFAULT_STEP_DURATION_MS = 1_500;
+/** Frame rate used when recording a play preview to a shareable video file. */
+export const PLAYBOOK_EXPORT_FPS = 24;
+/** Extra time recorded after the last step finishes, so the final position holds briefly. */
+export const PLAYBOOK_EXPORT_TAIL_MS = 1_200;

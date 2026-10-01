@@ -469,8 +469,8 @@ body {
 }
 
 .playbook-pane,
-.playbook-editor,
-.playbook-results {
+.playbook-results,
+.playbook-instructions {
   max-height: 85vh;
   overflow-y: auto;
 }
@@ -526,26 +526,90 @@ body {
 }
 
 .playbook-name-input {
-  width: 100%;
+  flex: 1;
   font: inherit;
-  padding: 0.6rem 0.8rem;
+  padding: 0.5rem 0.7rem;
   border-radius: 0.6rem;
   border: 2px solid var(--accent);
   background: transparent;
   color: var(--text);
 }
 
-.playbook-chip-row {
+/* --- Playbook editor: docked to the bottom, never covers the field ----- */
+
+.playbook-editor-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: min(48vh, 420px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.75rem 0.9rem calc(0.75rem + env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--panel) 97%, transparent);
+  border-top: 1px solid #1e293b;
+  z-index: 6;
+}
+
+.playbook-editor-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.playbook-help-button {
+  min-width: 36px;
+  min-height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.playbook-teams {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  justify-content: center;
+  gap: 0.75rem;
+}
+
+.playbook-team-section {
+  flex: 1;
+  min-width: 10rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.playbook-team-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.playbook-team-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.playbook-team-row.is-full + .text-button {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.playbook-chip-wrap {
+  position: relative;
+  display: inline-flex;
 }
 
 .playbook-chip {
-  min-height: 44px;
-  min-width: 44px;
-  padding: 0 0.9rem;
+  min-height: 40px;
+  min-width: 40px;
+  padding: 0 0.7rem;
   border-radius: 0.6rem;
   border: 2px solid var(--accent);
   background: transparent;
@@ -557,6 +621,122 @@ body {
 .playbook-chip.is-active {
   background: var(--accent);
   color: #04263a;
+}
+
+.playbook-chip-remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0;
+  line-height: 1;
+  border-radius: 50%;
+  border: 1px solid #1e293b;
+  background: #ef4444;
+  color: #fff;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.playbook-summary {
+  margin: 0;
+}
+
+.playbook-status {
+  margin: 0;
+  min-height: 1em;
+  font-size: 0.8rem;
+  color: var(--accent);
+}
+
+.playbook-step-builder {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border-radius: 0.6rem;
+  border: 1px solid #1e293b;
+  background: rgba(15, 23, 42, 0.5);
+}
+
+.playbook-step-builder.is-hidden {
+  display: none;
+}
+
+.playbook-point-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.playbook-point-readout {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.playbook-point-row .secondary-button.is-active {
+  background: var(--accent);
+  color: #04263a;
+}
+
+.playbook-time-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.6rem;
+}
+
+.playbook-field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.playbook-time-input {
+  width: 4.5rem;
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--text);
+}
+
+.playbook-tool-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.playbook-editor-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.playbook-editor-footer button {
+  flex: 1;
+  min-width: 7rem;
+}
+
+.playbook-instructions-list {
+  text-align: left;
+  width: 100%;
+  margin: 0;
+  padding-left: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.playbook-instructions-item {
+  font-size: 0.85rem;
+  line-height: 1.4;
 }
 
 .playbook-countdown {
