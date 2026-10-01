@@ -1,4 +1,15 @@
-import { MAX_INPUT_DT, MAX_PLAYERS, NUMBER_MAX, NUMBER_MIN, SPORTS, TEAMS } from '../config/constants';
+import {
+  MAX_INPUT_DT,
+  MAX_PLAYBOOK_ASSIGNMENTS,
+  MAX_PLAYBOOK_NAME_LENGTH,
+  MAX_PLAYERS,
+  MAX_WAYPOINTS_PER_ASSIGNMENT,
+  NUMBER_MAX,
+  NUMBER_MIN,
+  PLAYBOOK_MAX_DURATION_MS,
+  SPORTS,
+  TEAMS,
+} from '../config/constants';
 import type { SportType, TeamId } from '../config/constants';
 import type { PlayerState } from '../game/types';
 import { clamp, sanitizeNumber } from '../utils/math';
@@ -34,6 +45,38 @@ export interface DrawArrow {
   y2: number;
 }
 
+/** A single stop on a player's assigned path. `atMs` is elapsed time since the play started. */
+export interface PlaybookWaypoint {
+  x: number;
+  y: number;
+  atMs: number;
+}
+
+/** What one roster slot (identified by team+number, not playerId) is supposed to do. */
+export interface PlaybookAssignment {
+  team: TeamId;
+  number: number;
+  waypoints: PlaybookWaypoint[];
+}
+
+/** A coach-authored play. `durationMs` bounds how long grading runs before results are shown. */
+export interface Play {
+  id: string;
+  name: string;
+  durationMs: number;
+  assignments: PlaybookAssignment[];
+}
+
+/** Auto-graded outcome for one assignment, broadcast once a run finishes. */
+export interface PlaybookGrade {
+  team: TeamId;
+  number: number;
+  /** 0-100. 0 samples (nobody held that number) reports 0 rather than a misleading 100. */
+  accuracyPct: number;
+  /** True if a connected player actually held this team/number for at least one sample. */
+  graded: boolean;
+}
+
 export type ClientMessage =
   | { type: 'input'; sequence: number; x: number; y: number; dt: number }
   | { type: 'ping'; t: number }
@@ -59,6 +102,9 @@ export type HostMessage =
   | { type: 'roster'; entries: RosterEntry[]; reserved: ReservedNumber[] }
   | { type: 'drawEnabled'; enabled: boolean }
   | { type: 'arrows'; arrows: DrawArrow[] }
+  | { type: 'playbookRun'; play: Play; serverStartAtMs: number; countdownMs: number }
+  | { type: 'playbookResult'; playId: string; playName: string; grades: PlaybookGrade[] }
+  | { type: 'playbookCancel' }
   | { type: 'rejected'; reason: 'full' }
   | { type: 'pong'; t: number };
 
@@ -172,6 +218,87 @@ function parseArrows(value: unknown): DrawArrow[] | null {
     arrows.push(arrow);
   }
   return arrows;
+}
+
+function parseWaypoint(value: unknown): PlaybookWaypoint | null {
+  if (!isRecord(value)) return null;
+  const atMs = sanitizeNumber(value.atMs, -1);
+  if (!Number.isFinite(atMs) || atMs < 0 || atMs > PLAYBOOK_MAX_DURATION_MS) return null;
+  return { x: sanitizeNumber(value.x), y: sanitizeNumber(value.y), atMs };
+}
+
+function parseAssignment(value: unknown): PlaybookAssignment | null {
+  if (!isRecord(value)) return null;
+  const team = parseTeam(value.team);
+  const number = parseJerseyNumber(value.number);
+  if (!team || number === null) return null;
+  if (!Array.isArray(value.waypoints) || value.waypoints.length > MAX_WAYPOINTS_PER_ASSIGNMENT) {
+    return null;
+  }
+
+  const waypoints: PlaybookWaypoint[] = [];
+  for (const entry of value.waypoints) {
+    const waypoint = parseWaypoint(entry);
+    if (!waypoint) return null;
+    waypoints.push(waypoint);
+  }
+  return { team, number, waypoints };
+}
+
+export function parsePlay(value: unknown): Play | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.id !== 'string' || value.id.length === 0 || value.id.length > 64) return null;
+  if (
+    typeof value.name !== 'string' ||
+    value.name.length === 0 ||
+    value.name.length > MAX_PLAYBOOK_NAME_LENGTH
+  ) {
+    return null;
+  }
+
+  const durationMs = sanitizeNumber(value.durationMs, -1);
+  if (!Number.isFinite(durationMs) || durationMs <= 0 || durationMs > PLAYBOOK_MAX_DURATION_MS) {
+    return null;
+  }
+
+  if (!Array.isArray(value.assignments) || value.assignments.length > MAX_PLAYBOOK_ASSIGNMENTS) {
+    return null;
+  }
+
+  const assignments: PlaybookAssignment[] = [];
+  for (const entry of value.assignments) {
+    const assignment = parseAssignment(entry);
+    if (!assignment) return null;
+    assignments.push(assignment);
+  }
+
+  return { id: value.id, name: value.name, durationMs, assignments };
+}
+
+function parseGrade(value: unknown): PlaybookGrade | null {
+  if (!isRecord(value)) return null;
+  const team = parseTeam(value.team);
+  const number = parseJerseyNumber(value.number);
+  if (!team || number === null) return null;
+
+  return {
+    team,
+    number,
+    accuracyPct: clamp(sanitizeNumber(value.accuracyPct), 0, 100),
+    graded: value.graded === true,
+  };
+}
+
+function parseGrades(value: unknown): PlaybookGrade[] | null {
+  if (!Array.isArray(value) || value.length > MAX_PLAYBOOK_ASSIGNMENTS) return null;
+
+  const grades: PlaybookGrade[] = [];
+  for (const entry of value) {
+    const grade = parseGrade(entry);
+    if (!grade) return null;
+    grades.push(grade);
+  }
+  return grades;
 }
 
 function parseNetPlayer(value: unknown): NetPlayer | null {
@@ -295,6 +422,22 @@ export function parseHostMessage(value: unknown): HostMessage | null {
       const arrows = parseArrows(value.arrows);
       return arrows ? { type: 'arrows', arrows } : null;
     }
+    case 'playbookRun': {
+      const play = parsePlay(value.play);
+      const serverStartAtMs = sanitizeNumber(value.serverStartAtMs, -1);
+      const countdownMs = sanitizeNumber(value.countdownMs, -1);
+      if (!play || countdownMs < 0) return null;
+      return { type: 'playbookRun', play, serverStartAtMs, countdownMs };
+    }
+    case 'playbookResult': {
+      const grades = parseGrades(value.grades);
+      if (!grades || typeof value.playId !== 'string' || typeof value.playName !== 'string') {
+        return null;
+      }
+      return { type: 'playbookResult', playId: value.playId, playName: value.playName, grades };
+    }
+    case 'playbookCancel':
+      return { type: 'playbookCancel' };
     case 'rejected':
       return value.reason === 'full' ? { type: 'rejected', reason: 'full' } : null;
     case 'pong':

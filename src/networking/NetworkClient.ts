@@ -3,7 +3,14 @@ import type { SportType } from '../config/constants';
 import type { GameSession, RenderPlayer } from '../game/RenderPlayer';
 import type { PlayerId, PlayerState, Vector2 } from '../game/types';
 import { RemoteInterpolator, ServerClock } from './Interpolation';
-import type { DrawArrow, NetPlayer, ReservedNumber, RosterEntry } from './NetworkProtocol';
+import type {
+  DrawArrow,
+  NetPlayer,
+  PlaybookGrade,
+  Play,
+  ReservedNumber,
+  RosterEntry,
+} from './NetworkProtocol';
 import { channelFor } from './NetworkProtocol';
 import { decodeHostMessage, encode } from './NetworkSerializer';
 import { Prediction } from './Prediction';
@@ -24,6 +31,9 @@ export interface NetworkClientEvents {
   onRosterChange?: (entries: RosterEntry[], reserved: ReservedNumber[]) => void;
   onDrawEnabledChange?: (enabled: boolean) => void;
   onArrowsChange?: (arrows: DrawArrow[]) => void;
+  onPlaybookRun?: (play: Play, localStartAtMs: number, countdownMs: number) => void;
+  onPlaybookResult?: (playId: string, playName: string, grades: PlaybookGrade[]) => void;
+  onPlaybookCancel?: () => void;
   onConnectionState?: (state: ConnectionState) => void;
 }
 
@@ -165,6 +175,11 @@ export class NetworkClient implements GameSession {
     this.transport.send(channelFor('clearMyDrawings'), encode({ type: 'clearMyDrawings' }));
   }
 
+  /** Converts one of the host's clock timestamps (e.g. a playbook launch time) to local time. */
+  toLocalTime(serverTimeMs: number): number {
+    return this.serverClock.toLocal(serverTimeMs);
+  }
+
   afterFrame(nowMs: number): void {
     if (nowMs - this.lastPingAtMs < PING_INTERVAL_MS) return;
     this.lastPingAtMs = nowMs;
@@ -288,6 +303,22 @@ export class NetworkClient implements GameSession {
       case 'arrows':
         this.arrows = message.arrows;
         this.events.onArrowsChange?.(message.arrows);
+        return;
+
+      case 'playbookRun':
+        this.events.onPlaybookRun?.(
+          message.play,
+          this.serverClock.toLocal(message.serverStartAtMs),
+          message.countdownMs,
+        );
+        return;
+
+      case 'playbookResult':
+        this.events.onPlaybookResult?.(message.playId, message.playName, message.grades);
+        return;
+
+      case 'playbookCancel':
+        this.events.onPlaybookCancel?.();
         return;
 
       case 'rejected':

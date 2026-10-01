@@ -36,6 +36,11 @@ export class ServerClock {
     return localNowMs + (this.offset ?? 0);
   }
 
+  /** Inverse of `now`: turns a host-clock timestamp (e.g. a launch time) into local time. */
+  toLocal(serverTimeMs: number): number {
+    return serverTimeMs - (this.offset ?? 0);
+  }
+
   get synced(): boolean {
     return this.offset !== null;
   }

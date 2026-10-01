@@ -2,9 +2,10 @@ import Phaser from 'phaser';
 
 import { ARENA_HEIGHT, ARENA_WIDTH, DEFAULT_SPORT } from '../config/constants';
 import type { SportType, TeamId } from '../config/constants';
-import type { DrawArrow } from '../networking/NetworkProtocol';
+import type { DrawArrow, PlaybookAssignment, Play } from '../networking/NetworkProtocol';
 import { watchViewport } from '../utils/viewport';
 import { GameScene, type SceneBridge } from './GameScene';
+import type { ArmedTarget } from './PlaybookLayer';
 
 export class Game {
   private readonly game: Phaser.Game;
@@ -69,6 +70,30 @@ export class Game {
   /** Toggles this device's own tactics-board drawing. `onArrowDrawn` gets world coordinates. */
   setDrawMode(enabled: boolean, onArrowDrawn: (x1: number, y1: number, x2: number, y2: number) => void): void {
     this.scene.setDrawMode(enabled, onArrowDrawn);
+  }
+
+  /** Host-only: arms a player for tap-to-place waypoint editing in the playbook editor. */
+  setPlaybookEditMode(
+    enabled: boolean,
+    armed: ArmedTarget | null,
+    onWaypointPlaced: (x: number, y: number) => void,
+  ): void {
+    this.scene.setPlaybookEditMode(enabled, armed, onWaypointPlaced);
+  }
+
+  /** The full draft roster being edited, redrawn whenever any assignment's path changes. */
+  setPlaybookEditAssignments(assignments: readonly PlaybookAssignment[]): void {
+    this.scene.setPlaybookEditAssignments(assignments);
+  }
+
+  /** Shows (or, with `play: null`, hides) a launched play's paths for every connected player. */
+  setPlaybookLiveView(play: Play | null, localTeam: TeamId | null, localNumber: number | null): void {
+    this.scene.setPlaybookLiveView(play, localTeam, localNumber);
+  }
+
+  /** Local-clock time grading begins; `null` while only the path (not the ghost target) shows. */
+  setPlaybookLiveStart(startAtLocalMs: number | null): void {
+    this.scene.setPlaybookLiveStart(startAtLocalMs);
   }
 
   get isFullscreenSupported(): boolean {

@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
-import { MAX_INPUT_DT, MAX_PLAYERS, WS_MSG_MAX_BYTES } from '../src/config/constants';
+import {
+  MAX_INPUT_DT,
+  MAX_PLAYERS,
+  MAX_WAYPOINTS_PER_ASSIGNMENT,
+  PLAYBOOK_MAX_DURATION_MS,
+  WS_MSG_MAX_BYTES,
+} from '../src/config/constants';
 import {
   channelFor,
   parseClientMessage,
   parseHostMessage,
+  parsePlay,
   type HostMessage,
+  type Play,
 } from '../src/networking/NetworkProtocol';
 import {
   decodeClientMessage,
@@ -208,6 +216,115 @@ describe('host message validation', () => {
     ).toBeNull();
     expect(parseHostMessage({ type: 'sport', sport: 'cricket' })).toBeNull();
     expect(parseHostMessage({ type: 'sport' })).toBeNull();
+  });
+});
+
+describe('playbook message validation', () => {
+  const play: Play = {
+    id: 'play-1',
+    name: 'Post route',
+    durationMs: 3000,
+    assignments: [
+      {
+        team: 'A',
+        number: 7,
+        waypoints: [
+          { x: 0, y: 0, atMs: 0 },
+          { x: 10, y: 10, atMs: 1500 },
+        ],
+      },
+    ],
+  };
+  const grade = { team: 'A' as const, number: 7, accuracyPct: 82.5, graded: true };
+
+  it('round-trips a play through parsePlay', () => {
+    expect(parsePlay(play)).toEqual(play);
+  });
+
+  it('round-trips playbookRun, playbookResult and playbookCancel host messages', () => {
+    const messages: HostMessage[] = [
+      { type: 'playbookRun', play, serverStartAtMs: 1000, countdownMs: 3000 },
+      { type: 'playbookResult', playId: 'play-1', playName: 'Post route', grades: [grade] },
+      { type: 'playbookCancel' },
+    ];
+
+    for (const message of messages) {
+      expect(decodeHostMessage(encode(message))).toEqual(message);
+    }
+  });
+
+  it('rejects a play with too many waypoints on one assignment', () => {
+    const waypoints = Array.from({ length: MAX_WAYPOINTS_PER_ASSIGNMENT + 1 }, (_, i) => ({
+      x: 0,
+      y: 0,
+      atMs: i * 10,
+    }));
+    const bad = { ...play, assignments: [{ team: 'A', number: 7, waypoints }] };
+    expect(parsePlay(bad)).toBeNull();
+  });
+
+  it('rejects a waypoint with a non-finite or out-of-range atMs', () => {
+    const bad1 = {
+      ...play,
+      assignments: [{ team: 'A', number: 7, waypoints: [{ x: 0, y: 0, atMs: Number.NaN }] }],
+    };
+    const bad2 = {
+      ...play,
+      assignments: [
+        { team: 'A', number: 7, waypoints: [{ x: 0, y: 0, atMs: PLAYBOOK_MAX_DURATION_MS + 1 }] },
+      ],
+    };
+    expect(parsePlay(bad1)).toBeNull();
+    expect(parsePlay(bad2)).toBeNull();
+  });
+
+  it('rejects an assignment with an unknown team or out-of-range number', () => {
+    expect(
+      parsePlay({ ...play, assignments: [{ ...play.assignments[0], team: 'C' }] }),
+    ).toBeNull();
+    expect(
+      parsePlay({ ...play, assignments: [{ ...play.assignments[0], number: 0 }] }),
+    ).toBeNull();
+  });
+
+  it('rejects a play with a missing id, empty name or non-positive duration', () => {
+    expect(parsePlay({ ...play, id: '' })).toBeNull();
+    expect(parsePlay({ ...play, name: '' })).toBeNull();
+    expect(parsePlay({ ...play, durationMs: 0 })).toBeNull();
+    expect(parsePlay({ ...play, durationMs: PLAYBOOK_MAX_DURATION_MS + 1 })).toBeNull();
+  });
+
+  it('rejects a playbookRun with an invalid play or negative countdown', () => {
+    expect(
+      parseHostMessage({ type: 'playbookRun', play: { ...play, id: '' }, serverStartAtMs: 0, countdownMs: 3000 }),
+    ).toBeNull();
+    expect(
+      parseHostMessage({ type: 'playbookRun', play, serverStartAtMs: 0, countdownMs: -1 }),
+    ).toBeNull();
+  });
+
+  it('rejects a playbookResult with grades beyond the assignment cap or bad fields', () => {
+    expect(
+      parseHostMessage({ type: 'playbookResult', playId: 'p', playName: 'n', grades: 'nope' }),
+    ).toBeNull();
+    expect(
+      parseHostMessage({ type: 'playbookResult', playId: 1, playName: 'n', grades: [grade] }),
+    ).toBeNull();
+  });
+
+  it('clamps an out-of-range accuracy and coerces a non-boolean graded flag', () => {
+    const parsed = parseHostMessage({
+      type: 'playbookResult',
+      playId: 'p',
+      playName: 'n',
+      grades: [{ team: 'A', number: 7, accuracyPct: 500, graded: 'yes' }],
+    });
+    expect(parsed).toEqual({
+      type: 'playbookResult',
+      playId: 'p',
+      playName: 'n',
+      grades: [{ team: 'A', number: 7, accuracyPct: 100, graded: false }],
+    });
   });
 });
 

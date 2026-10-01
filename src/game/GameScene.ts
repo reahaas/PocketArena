@@ -2,10 +2,12 @@ import Phaser from 'phaser';
 
 import { DEFAULT_SPORT } from '../config/constants';
 import type { SportType, TeamId } from '../config/constants';
-import type { DrawArrow } from '../networking/NetworkProtocol';
+import type { DrawArrow, PlaybookAssignment, Play } from '../networking/NetworkProtocol';
 import { Arena } from './Arena';
 import { DrawLayer } from './DrawLayer';
 import { PlayerManager } from './PlayerManager';
+import type { ArmedTarget } from './PlaybookLayer';
+import { PlaybookLayer } from './PlaybookLayer';
 import type { RenderPlayer } from './RenderPlayer';
 
 export interface SceneBridge {
@@ -16,6 +18,7 @@ export class GameScene extends Phaser.Scene {
   private players!: PlayerManager;
   private arena: Arena | null = null;
   private drawLayer: DrawLayer | null = null;
+  private playbookLayer: PlaybookLayer | null = null;
   private bridge: SceneBridge | null = null;
   private pendingSport: SportType = DEFAULT_SPORT;
   private pendingRoster: readonly { playerId: string; team: TeamId; number: number }[] = [];
@@ -23,6 +26,18 @@ export class GameScene extends Phaser.Scene {
   private pendingDrawMode = false;
   private onArrowDrawnCallback: ((x1: number, y1: number, x2: number, y2: number) => void) | null =
     null;
+  private pendingPlaybookEdit: {
+    enabled: boolean;
+    armed: ArmedTarget | null;
+    onWaypointPlaced: (x: number, y: number) => void;
+  } | null = null;
+  private pendingPlaybookAssignments: readonly PlaybookAssignment[] = [];
+  private pendingPlaybookLive: {
+    play: Play | null;
+    localTeam: TeamId | null;
+    localNumber: number | null;
+  } | null = null;
+  private pendingPlaybookStart: number | null = null;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -55,6 +70,31 @@ export class GameScene extends Phaser.Scene {
     this.drawLayer?.setDrawMode(enabled, onArrowDrawn);
   }
 
+  /** Host-only: armed === null disables tap-to-place without leaving the editor. */
+  setPlaybookEditMode(
+    enabled: boolean,
+    armed: ArmedTarget | null,
+    onWaypointPlaced: (x: number, y: number) => void,
+  ): void {
+    this.pendingPlaybookEdit = { enabled, armed, onWaypointPlaced };
+    this.playbookLayer?.setEditMode(enabled, armed, onWaypointPlaced);
+  }
+
+  setPlaybookEditAssignments(assignments: readonly PlaybookAssignment[]): void {
+    this.pendingPlaybookAssignments = assignments;
+    this.playbookLayer?.setEditAssignments(assignments);
+  }
+
+  setPlaybookLiveView(play: Play | null, localTeam: TeamId | null, localNumber: number | null): void {
+    this.pendingPlaybookLive = { play, localTeam, localNumber };
+    this.playbookLayer?.setLiveView(play, localTeam, localNumber);
+  }
+
+  setPlaybookLiveStart(startAtLocalMs: number | null): void {
+    this.pendingPlaybookStart = startAtLocalMs;
+    this.playbookLayer?.setLiveStart(startAtLocalMs);
+  }
+
   create(): void {
     this.arena = new Arena(this);
     this.arena.setSport(this.pendingSport);
@@ -63,6 +103,23 @@ export class GameScene extends Phaser.Scene {
     this.drawLayer = new DrawLayer(this);
     this.drawLayer.setArrows(this.pendingArrows);
     if (this.onArrowDrawnCallback) this.drawLayer.setDrawMode(this.pendingDrawMode, this.onArrowDrawnCallback);
+    this.playbookLayer = new PlaybookLayer(this);
+    if (this.pendingPlaybookEdit) {
+      this.playbookLayer.setEditMode(
+        this.pendingPlaybookEdit.enabled,
+        this.pendingPlaybookEdit.armed,
+        this.pendingPlaybookEdit.onWaypointPlaced,
+      );
+    }
+    this.playbookLayer.setEditAssignments(this.pendingPlaybookAssignments);
+    if (this.pendingPlaybookLive) {
+      this.playbookLayer.setLiveView(
+        this.pendingPlaybookLive.play,
+        this.pendingPlaybookLive.localTeam,
+        this.pendingPlaybookLive.localNumber,
+      );
+    }
+    this.playbookLayer.setLiveStart(this.pendingPlaybookStart);
     this.cameras.main.setBackgroundColor('#020617');
   }
 
@@ -72,7 +129,9 @@ export class GameScene extends Phaser.Scene {
 
     // performance.now() keeps render sampling on the same clock as the networking layer.
     // The camera never moves: the board is scaled to fit, so everyone is always visible.
-    this.players.sync(this.bridge.renderPlayers(performance.now()));
+    const now = performance.now();
+    this.players.sync(this.bridge.renderPlayers(now));
+    this.playbookLayer?.update(now);
   }
 }
 

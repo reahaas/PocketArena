@@ -8,17 +8,30 @@ import {
   NUMBER_MAX,
   NUMBER_MIN,
   NUMBER_RELEASE_GRACE_MS,
+  PLAYBOOK_ACCURACY_MAX_DISTANCE_PX,
+  PLAYBOOK_ACCURACY_SAMPLE_MS,
+  PLAYBOOK_COUNTDOWN_MS,
   SNAPSHOT_INTERVAL_MS,
   TEAMS,
 } from '../config/constants';
 import type { SportType, TeamId } from '../config/constants';
 import { GameSimulation } from '../game/GameSimulation';
+import { expectedPlaybookPosition } from '../game/PlaybookMath';
 import type { GameSession, RenderPlayer } from '../game/RenderPlayer';
 import { spawnPointForSlot } from '../game/SpawnPoints';
 import type { PlayerId, PlayerState, Vector2 } from '../game/types';
 import { clamp } from '../utils/math';
 import { generatePlayerId } from '../room/RoomId';
-import type { DrawArrow, HostMessage, NetPlayer, ReservedNumber, RosterEntry } from './NetworkProtocol';
+import type {
+  DrawArrow,
+  HostMessage,
+  NetPlayer,
+  PlaybookGrade,
+  PlaybookWaypoint,
+  Play,
+  ReservedNumber,
+  RosterEntry,
+} from './NetworkProtocol';
 import { channelFor } from './NetworkProtocol';
 import { decodeClientMessage, encode } from './NetworkSerializer';
 import type { Transport } from './transport/Transport';
@@ -29,6 +42,26 @@ interface QueuedInput {
   sequence: number;
   input: Vector2;
   dt: number;
+}
+
+/** Per-assignment accumulator while a play is being graded. */
+interface GradeAccumulator {
+  team: TeamId;
+  number: number;
+  /** Snapshotted when the run starts — a mid-run jersey swap should not change who is graded. */
+  playerId: PlayerId | null;
+  waypoints: PlaybookWaypoint[];
+  totalErrorPx: number;
+  samples: number;
+}
+
+interface PlaybookRunState {
+  play: Play;
+  /** Host-clock time grading begins; before this, clients are just showing a countdown. */
+  startAtMs: number;
+  endAtMs: number;
+  lastSampleMs: number;
+  accumulators: GradeAccumulator[];
 }
 
 interface HostPeer {
@@ -51,6 +84,9 @@ export interface NetworkHostEvents {
   onRosterChange?: (entries: RosterEntry[], reserved: ReservedNumber[]) => void;
   onDrawEnabledChange?: (enabled: boolean) => void;
   onArrowsChange?: (arrows: DrawArrow[]) => void;
+  onPlaybookRun?: (play: Play, serverStartAtMs: number, countdownMs: number) => void;
+  onPlaybookResult?: (playId: string, playName: string, grades: PlaybookGrade[]) => void;
+  onPlaybookCancel?: () => void;
 }
 
 export type Clock = () => number;
@@ -66,6 +102,7 @@ export class NetworkHost implements GameSession {
   /** team -> jersey number -> ms timestamp the number becomes fully free again. */
   private readonly reservations = new Map<TeamId, Map<number, number>>(TEAMS.map((t) => [t, new Map()]));
   private readonly arrows: DrawArrow[] = [];
+  private playbookRun: PlaybookRunState | null = null;
 
   private tick = 0;
   private lastBroadcastMs = 0;
@@ -183,6 +220,43 @@ export class NetworkHost implements GameSession {
     this.events.onArrowsChange?.([]);
   }
 
+  /** Launches a play: every player gets the full path plus a countdown to a shared start time. */
+  runPlaybook(play: Play): void {
+    const nowMs = this.now();
+    const startAtMs = nowMs + PLAYBOOK_COUNTDOWN_MS;
+
+    this.playbookRun = {
+      play,
+      startAtMs,
+      endAtMs: startAtMs + play.durationMs,
+      lastSampleMs: startAtMs,
+      accumulators: play.assignments.map((assignment) => ({
+        team: assignment.team,
+        number: assignment.number,
+        playerId: this.findPlayerIdFor(assignment.team, assignment.number),
+        waypoints: assignment.waypoints,
+        totalErrorPx: 0,
+        samples: 0,
+      })),
+    };
+
+    this.broadcast({
+      type: 'playbookRun',
+      play,
+      serverStartAtMs: startAtMs,
+      countdownMs: PLAYBOOK_COUNTDOWN_MS,
+    });
+    this.events.onPlaybookRun?.(play, startAtMs, PLAYBOOK_COUNTDOWN_MS);
+  }
+
+  /** Aborts a play in progress (countdown or grading); a no-op if nothing is running. */
+  cancelPlaybook(): void {
+    if (!this.playbookRun) return;
+    this.playbookRun = null;
+    this.broadcast({ type: 'playbookCancel' });
+    this.events.onPlaybookCancel?.();
+  }
+
   /** Authoritative state for a player, for tests and debug tooling. */
   getPlayerState(id: PlayerId): PlayerState | undefined {
     return this.simulation.getPlayer(id);
@@ -245,6 +319,14 @@ export class NetworkHost implements GameSession {
     if (this.paused) this.sendTo(peer, { type: 'paused', paused: true });
     this.sendTo(peer, { type: 'drawEnabled', enabled: this.drawingEnabledForAll });
     if (this.arrows.length > 0) this.sendTo(peer, { type: 'arrows', arrows: [...this.arrows] });
+    if (this.playbookRun) {
+      this.sendTo(peer, {
+        type: 'playbookRun',
+        play: this.playbookRun.play,
+        serverStartAtMs: this.playbookRun.startAtMs,
+        countdownMs: PLAYBOOK_COUNTDOWN_MS,
+      });
+    }
 
     this.broadcastExcept(playerId, { type: 'playerJoined', player: this.toNetPlayer(player, 0) });
     this.broadcastRoster();
@@ -308,6 +390,8 @@ export class NetworkHost implements GameSession {
     // Numbers whose grace period just lapsed become selectable; tell everyone so an open
     // number picker updates without needing a fresh request.
     if (this.purgeExpiredReservations(nowMs)) this.broadcastRoster();
+
+    if (this.playbookRun) this.stepPlaybook(nowMs);
 
     if (nowMs - this.lastBroadcastMs < SNAPSHOT_INTERVAL_MS) return;
     this.lastBroadcastMs = nowMs;
@@ -423,6 +507,56 @@ export class NetworkHost implements GameSession {
     if (this.arrows.length === before) return;
     this.broadcast({ type: 'arrows', arrows: [...this.arrows] });
     this.events.onArrowsChange?.([...this.arrows]);
+  }
+
+  private findPlayerIdFor(team: TeamId, number: number): PlayerId | null {
+    for (const peer of this.peers.values()) {
+      if (peer.team === team && peer.number === number) return peer.playerId;
+    }
+    return null;
+  }
+
+  /** Samples real-vs-expected position on a fixed cadence, and finalizes once the play ends. */
+  private stepPlaybook(nowMs: number): void {
+    const run = this.playbookRun;
+    if (!run) return;
+
+    if (nowMs >= run.endAtMs) {
+      this.finalizePlaybook(run);
+      return;
+    }
+
+    if (nowMs < run.startAtMs) return;
+    if (nowMs - run.lastSampleMs < PLAYBOOK_ACCURACY_SAMPLE_MS) return;
+    run.lastSampleMs = nowMs;
+
+    const elapsedMs = nowMs - run.startAtMs;
+    for (const accumulator of run.accumulators) {
+      if (!accumulator.playerId) continue;
+      const actual = this.simulation.getPlayer(accumulator.playerId);
+      const expected = expectedPlaybookPosition(accumulator.waypoints, elapsedMs);
+      if (!actual || !expected) continue;
+
+      accumulator.totalErrorPx += Math.hypot(actual.x - expected.x, actual.y - expected.y);
+      accumulator.samples += 1;
+    }
+  }
+
+  private finalizePlaybook(run: PlaybookRunState): void {
+    this.playbookRun = null;
+
+    const grades: PlaybookGrade[] = run.accumulators.map((accumulator) => {
+      if (!accumulator.playerId || accumulator.samples === 0) {
+        return { team: accumulator.team, number: accumulator.number, accuracyPct: 0, graded: false };
+      }
+      const avgErrorPx = accumulator.totalErrorPx / accumulator.samples;
+      const accuracyPct =
+        clamp(1 - avgErrorPx / PLAYBOOK_ACCURACY_MAX_DISTANCE_PX, 0, 1) * 100;
+      return { team: accumulator.team, number: accumulator.number, accuracyPct, graded: true };
+    });
+
+    this.broadcast({ type: 'playbookResult', playId: run.play.id, playName: run.play.name, grades });
+    this.events.onPlaybookResult?.(run.play.id, run.play.name, grades);
   }
 
   private enqueue(peer: HostPeer, input: QueuedInput): void {

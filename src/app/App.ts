@@ -1,8 +1,11 @@
 import { SIGNALING_URL } from '../config/config';
 import {
   DEFAULT_SPORT,
+  DEFAULT_WAYPOINT_INTERVAL_MS,
   INPUT_INTERVAL_MS,
   MAX_CATCHUP_TICKS,
+  MAX_WAYPOINTS_PER_ASSIGNMENT,
+  PLAYBOOK_MAX_DURATION_MS,
   SIM_TICK_MS,
 } from '../config/constants';
 import type { SportType, TeamId } from '../config/constants';
@@ -13,13 +16,21 @@ import type { GameSession } from '../game/RenderPlayer';
 import { InputManager } from '../input/InputManager';
 import { NetworkClient } from '../networking/NetworkClient';
 import { NetworkHost } from '../networking/NetworkHost';
-import type { ReservedNumber, RosterEntry } from '../networking/NetworkProtocol';
+import type {
+  PlaybookAssignment,
+  PlaybookGrade,
+  Play,
+  ReservedNumber,
+  RosterEntry,
+} from '../networking/NetworkProtocol';
 import { SignalingClient, SignalingError } from '../networking/SignalingClient';
 import { buildIceConfiguration, debugConditions } from '../networking/iceConfig';
 import { fromCandidate, fromDescription, toCandidate, toDescription } from '../networking/sdp';
 import type { ConnectionState } from '../networking/transport/Transport';
 import { WebRTCConnection } from '../networking/transport/WebRTCConnection';
 import { basePath, buildInviteUrl, parseJoinPath } from '../room/InviteLink';
+import { generatePlayerId } from '../room/RoomId';
+import { exportPlay, importPlayFromFile, loadPlays, savePlays } from '../storage/PlaybookStorage';
 import { ConnectionIndicator } from '../ui/ConnectionIndicator';
 import { DebugOverlay, botCount, isDebugEnabled } from '../ui/DebugOverlay';
 import { FullscreenButton } from '../ui/FullscreenButton';
@@ -27,15 +38,95 @@ import { renderHomeScreen } from '../ui/HomeScreen';
 import { renderConnecting, renderJoinScreen } from '../ui/JoinGameScreen';
 import { renderMessageScreen } from '../ui/MessageScreen';
 import { NumberPane } from '../ui/NumberPane';
+import { PlaybookButton } from '../ui/PlaybookButton';
+import { PlaybookCountdownOverlay } from '../ui/PlaybookCountdownOverlay';
+import { PlaybookEditor, teamNumberKey } from '../ui/PlaybookEditor';
+import { PlaybookPane } from '../ui/PlaybookPane';
+import { PlaybookResultsPane } from '../ui/PlaybookResultsPane';
 import { PlayerToolsButton } from '../ui/PlayerToolsButton';
 import { PlayerToolsPane } from '../ui/PlayerToolsPane';
 import { SettingsButton } from '../ui/SettingsButton';
 import { SettingsPane } from '../ui/SettingsPane';
 import { ShareOverlay } from '../ui/ShareOverlay';
 import { clear, el } from '../ui/dom';
+import { clamp } from '../utils/math';
 import { ScreenWakeLock } from '../utils/wakeLock';
 
 const WELCOME_TIMEOUT_MS = 20_000;
+
+/**
+ * Shared by host and client: once a play is launched, every device reacts the same way —
+ * show the countdown, then the ghost path, then the results — regardless of who is authoring it.
+ */
+interface PlaybookViewController {
+  handleRun(play: Play, startAtLocalMs: number, countdownMs: number): void;
+  handleResult(playName: string, grades: PlaybookGrade[]): void;
+  handleCancel(): void;
+  /** Re-pushes the in-progress run to the game layer — for a `Game` that only just became ready. */
+  reapply(): void;
+  teardown(): void;
+}
+
+function createPlaybookViewController(
+  uiRoot: HTMLElement,
+  getGame: () => Game | null,
+  getMyRosterEntry: () => RosterEntry | undefined,
+): PlaybookViewController {
+  let countdown: PlaybookCountdownOverlay | null = null;
+  let results: PlaybookResultsPane | null = null;
+  // Needed because a client's `Game` can finish initializing after a run already started.
+  let activePlay: Play | null = null;
+  let activeStartAtLocalMs: number | null = null;
+
+  const clearCountdown = (): void => {
+    countdown?.destroy();
+    countdown = null;
+  };
+  const clearResults = (): void => {
+    results?.destroy();
+    results = null;
+  };
+  const pushLiveView = (): void => {
+    const mine = getMyRosterEntry();
+    getGame()?.setPlaybookLiveView(activePlay, activePlay ? mine?.team ?? null : null, activePlay ? mine?.number ?? null : null);
+    getGame()?.setPlaybookLiveStart(activeStartAtLocalMs);
+  };
+  const clearLiveView = (): void => {
+    activePlay = null;
+    activeStartAtLocalMs = null;
+    pushLiveView();
+  };
+
+  return {
+    handleRun(play, startAtLocalMs) {
+      clearResults();
+      clearCountdown();
+      activePlay = play;
+      activeStartAtLocalMs = startAtLocalMs;
+      pushLiveView();
+      countdown = new PlaybookCountdownOverlay(uiRoot, play.name, startAtLocalMs, () => {
+        countdown = null;
+      });
+    },
+    handleResult(playName, grades) {
+      clearCountdown();
+      clearLiveView();
+      clearResults();
+      results = new PlaybookResultsPane(uiRoot, playName, grades, clearResults);
+    },
+    handleCancel() {
+      clearCountdown();
+      clearLiveView();
+    },
+    reapply() {
+      pushLiveView();
+    },
+    teardown() {
+      clearCountdown();
+      clearResults();
+    },
+  };
+}
 
 interface Teardown {
   (): void;
@@ -138,6 +229,12 @@ export class App {
     let inDrawMode = false;
     let drawEnabledForAll = false;
 
+    let playbookLibrary: Play[] = loadPlays();
+    let playbookPane: PlaybookPane | null = null;
+    let playbookEditor: PlaybookEditor | null = null;
+    let draftAssignments = new Map<string, PlaybookAssignment>();
+    let armedTarget: { team: TeamId; number: number } | null = null;
+
     const host = new NetworkHost({
       // Event-driven so the counter stays correct even while the tab is backgrounded.
       onPlayerCountChange: (count) => share?.setPlayerCount(count),
@@ -153,6 +250,10 @@ export class App {
         settingsPane?.setDrawEnabled(enabled);
       },
       onArrowsChange: (arrows) => gameInstance?.setArrows(arrows),
+      onPlaybookRun: (play, startAtMs, countdownMs) =>
+        playbookView.handleRun(play, startAtMs, countdownMs),
+      onPlaybookResult: (_playId, playName, grades) => playbookView.handleResult(playName, grades),
+      onPlaybookCancel: () => playbookView.handleCancel(),
     });
     roster = host.currentRoster;
     reserved = host.currentReservedNumbers;
@@ -160,6 +261,8 @@ export class App {
 
     const myRosterEntry = (): RosterEntry | undefined =>
       roster.find((entry) => entry.playerId === host.localPlayerId);
+
+    const playbookView = createPlaybookViewController(this.uiRoot, () => gameInstance, myRosterEntry);
 
     const takenNumbers = (): Set<number> =>
       this.takenNumbersForMyTeam(host.localPlayerId, myRosterEntry()?.team ?? 'A', roster, reserved);
@@ -216,6 +319,154 @@ export class App {
       input?.setJoystickEnabled(!enabled);
       gameInstance?.setDrawMode(enabled, (x1, y1, x2, y2) => host.addArrow(x1, y1, x2, y2));
       playerToolsPane?.setDrawMode(enabled);
+    };
+
+    // --- Playbook (host-only editor + library) ---------------------------
+
+    const waypointSummary = (target: { team: TeamId; number: number } | null): string => {
+      if (!target) return 'Tap a player, then tap the field to place their path.';
+      const count = draftAssignments.get(teamNumberKey(target.team, target.number))?.waypoints.length ?? 0;
+      return `#${target.number}: ${count} waypoint${count === 1 ? '' : 's'} placed.`;
+    };
+
+    const refreshEditorPaths = (): void => {
+      const assignments = [...draftAssignments.values()].filter((a) => a.waypoints.length > 0);
+      gameInstance?.setPlaybookEditAssignments(assignments);
+    };
+
+    const armPlaybookPlayer = (target: { team: TeamId; number: number } | null): void => {
+      armedTarget = target;
+      playbookEditor?.setArmed(target);
+      playbookEditor?.setSummary(waypointSummary(target));
+      gameInstance?.setPlaybookEditMode(true, target, onPlaybookWaypointPlaced);
+    };
+
+    const onPlaybookWaypointPlaced = (x: number, y: number): void => {
+      if (!armedTarget) return;
+      const key = teamNumberKey(armedTarget.team, armedTarget.number);
+      let assignment = draftAssignments.get(key);
+      if (!assignment) {
+        assignment = { team: armedTarget.team, number: armedTarget.number, waypoints: [] };
+        draftAssignments.set(key, assignment);
+      }
+      if (assignment.waypoints.length >= MAX_WAYPOINTS_PER_ASSIGNMENT) return;
+      assignment.waypoints.push({
+        x,
+        y,
+        atMs: assignment.waypoints.length * DEFAULT_WAYPOINT_INTERVAL_MS,
+      });
+      refreshEditorPaths();
+      playbookEditor?.setSummary(waypointSummary(armedTarget));
+    };
+
+    const undoPlaybookWaypoint = (): void => {
+      if (!armedTarget) return;
+      draftAssignments.get(teamNumberKey(armedTarget.team, armedTarget.number))?.waypoints.pop();
+      refreshEditorPaths();
+      playbookEditor?.setSummary(waypointSummary(armedTarget));
+    };
+
+    const clearPlaybookPath = (): void => {
+      if (!armedTarget) return;
+      draftAssignments.get(teamNumberKey(armedTarget.team, armedTarget.number))?.waypoints.splice(0);
+      refreshEditorPaths();
+      playbookEditor?.setSummary(waypointSummary(armedTarget));
+    };
+
+    const closePlaybookEditor = (): void => {
+      playbookEditor?.destroy();
+      playbookEditor = null;
+      armedTarget = null;
+      gameInstance?.setPlaybookEditMode(false, null, () => undefined);
+      gameInstance?.setPlaybookEditAssignments([]);
+    };
+
+    const closePlaybookPane = (): void => {
+      playbookPane?.destroy();
+      playbookPane = null;
+    };
+
+    const openPlaybookEditor = (): void => {
+      closePlaybookPane();
+      closePlaybookEditor();
+      draftAssignments = new Map();
+      armedTarget = null;
+      playbookEditor = new PlaybookEditor(
+        this.uiRoot,
+        roster.map((entry) => ({ team: entry.team, number: entry.number })),
+        {
+          onArm: armPlaybookPlayer,
+          onUndo: undoPlaybookWaypoint,
+          onClearArmed: clearPlaybookPath,
+          onSave: (name) => savePlaybookDraft(name),
+          onCancel: () => {
+            closePlaybookEditor();
+            openPlaybookPane();
+          },
+        },
+      );
+      gameInstance?.setPlaybookEditMode(true, null, onPlaybookWaypointPlaced);
+      gameInstance?.setPlaybookEditAssignments([]);
+    };
+
+    const savePlaybookDraft = (name: string): void => {
+      const assignments = [...draftAssignments.values()].filter((a) => a.waypoints.length > 0);
+      if (assignments.length === 0) {
+        playbookEditor?.setSummary('Add at least one waypoint before saving.');
+        return;
+      }
+
+      const maxAtMs = Math.max(...assignments.flatMap((a) => a.waypoints.map((w) => w.atMs)));
+      const durationMs = clamp(
+        maxAtMs + DEFAULT_WAYPOINT_INTERVAL_MS,
+        DEFAULT_WAYPOINT_INTERVAL_MS,
+        PLAYBOOK_MAX_DURATION_MS,
+      );
+      const play: Play = { id: generatePlayerId(), name: name || 'Untitled Play', durationMs, assignments };
+
+      playbookLibrary = [play, ...playbookLibrary];
+      savePlays(playbookLibrary);
+      closePlaybookEditor();
+      openPlaybookPane();
+    };
+
+    const openPlaybookPane = (): void => {
+      closePlaybookEditor();
+      closePlaybookPane();
+      playbookPane = new PlaybookPane(this.uiRoot, playbookLibrary, {
+        onNew: openPlaybookEditor,
+        onRun: (play) => {
+          closePlaybookPane();
+          host.runPlaybook(play);
+        },
+        onExport: (play) => exportPlay(play),
+        onImport: (file) => {
+          void importPlayFromFile(file).then((play) => {
+            if (!play) return;
+            playbookLibrary = [play, ...playbookLibrary];
+            savePlays(playbookLibrary);
+            playbookPane?.update(playbookLibrary);
+          });
+        },
+        onDelete: (play) => {
+          playbookLibrary = playbookLibrary.filter((p) => p.id !== play.id);
+          savePlays(playbookLibrary);
+          playbookPane?.update(playbookLibrary);
+        },
+        onClose: closePlaybookPane,
+      });
+    };
+
+    const togglePlaybookPane = (): void => {
+      if (playbookPane) {
+        closePlaybookPane();
+        return;
+      }
+      if (playbookEditor) {
+        closePlaybookEditor();
+        return;
+      }
+      openPlaybookPane();
     };
 
     const connections = new Map<string, WebRTCConnection>();
@@ -308,6 +559,7 @@ export class App {
     });
 
     const playerToolsButton = new PlayerToolsButton(this.uiRoot, togglePlayerTools);
+    const playbookButton = new PlaybookButton(this.uiRoot, togglePlaybookPane);
 
     const wakeLock = new ScreenWakeLock();
     void wakeLock.acquire();
@@ -335,6 +587,10 @@ export class App {
       () => settingsButton.destroy(),
       () => closePlayerTools(),
       () => playerToolsButton.destroy(),
+      () => closePlaybookPane(),
+      () => closePlaybookEditor(),
+      () => playbookButton.destroy(),
+      () => playbookView.teardown(),
       () => {
         for (const connection of connections.values()) connection.close();
       },
@@ -349,6 +605,7 @@ export class App {
         gameInstance = game;
         game.setRoster(roster);
         game.setArrows([...host.currentArrows]);
+        playbookView.reapply();
       },
       onInputReady: (im) => {
         input = im;
@@ -455,6 +712,10 @@ export class App {
         refreshPlayerToolsPane();
       },
       onArrowsChange: (arrows) => gameInstance?.setArrows(arrows),
+      onPlaybookRun: (play, localStartAtMs, countdownMs) =>
+        playbookView.handleRun(play, localStartAtMs, countdownMs),
+      onPlaybookResult: (_playId, playName, grades) => playbookView.handleResult(playName, grades),
+      onPlaybookCancel: () => playbookView.handleCancel(),
       onReady: () => {
         if (started) return;
         started = true;
@@ -470,6 +731,7 @@ export class App {
           sport,
           (game) => {
             gameInstance = game;
+            playbookView.reapply();
           },
           (im) => {
             input = im;
@@ -481,6 +743,8 @@ export class App {
 
     const myRosterEntry = (): RosterEntry | undefined =>
       roster.find((entry) => entry.playerId === client.localPlayerId);
+
+    const playbookView = createPlaybookViewController(this.uiRoot, () => gameInstance, myRosterEntry);
 
     const takenNumbers = (): Set<number> =>
       this.takenNumbersForMyTeam(client.localPlayerId, myRosterEntry()?.team ?? 'A', roster, reserved);
@@ -539,6 +803,7 @@ export class App {
     };
 
     this.teardowns.push(() => closePlayerTools());
+    this.teardowns.push(() => playbookView.teardown());
 
     const timeout = setTimeout(() => {
       if (started) return;
