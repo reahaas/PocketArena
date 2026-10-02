@@ -50,6 +50,7 @@ export class PlaybookLayer {
   private livePlay: Play | null = null;
   private liveLocalKey: string | null = null;
   private liveStartAtLocalMs: number | null = null;
+  private showOtherLiveGhosts = false;
 
   private previewPlay: Play | null = null;
   private previewStartAtLocalMs: number | null = null;
@@ -94,10 +95,16 @@ export class PlaybookLayer {
   }
 
   /** Set once a play is launched (countdown or running). `null` clears the overlay entirely. */
-  setLiveView(play: Play | null, localTeam: TeamId | null, localNumber: number | null): void {
+  setLiveView(
+    play: Play | null,
+    localTeam: TeamId | null,
+    localNumber: number | null,
+    showOtherGhosts = false,
+  ): void {
     this.livePlay = play;
     this.liveLocalKey =
       localTeam && localNumber !== null ? assignmentKey(localTeam, localNumber) : null;
+    this.showOtherLiveGhosts = Boolean(play && showOtherGhosts);
     if (!play) this.liveStartAtLocalMs = null;
     this.redrawPaths();
   }
@@ -138,18 +145,30 @@ export class PlaybookLayer {
     const mine = this.livePlay.assignments.find(
       (a) => assignmentKey(a.team, a.number) === this.liveLocalKey,
     );
-    if (!mine) return;
-
     const elapsedMs = nowMs - this.liveStartAtLocalMs;
     if (elapsedMs < 0) return;
 
-    const position = expectedPlaybookPosition(mine.steps, elapsedMs);
-    if (!position) return;
+    if (mine) {
+      const position = expectedPlaybookPosition(mine.steps, elapsedMs);
+      if (position) {
+        this.ghost.lineStyle(4, 0xfacc15, 1);
+        this.ghost.strokeCircle(position.x, position.y, GHOST_RADIUS);
+        this.ghost.fillStyle(0xfacc15, 0.25);
+        this.ghost.fillCircle(position.x, position.y, GHOST_RADIUS);
+      }
+    }
 
-    this.ghost.lineStyle(4, 0xfacc15, 1);
-    this.ghost.strokeCircle(position.x, position.y, GHOST_RADIUS);
-    this.ghost.fillStyle(0xfacc15, 0.25);
-    this.ghost.fillCircle(position.x, position.y, GHOST_RADIUS);
+    if (this.showOtherLiveGhosts) {
+      for (const assignment of this.livePlay.assignments) {
+        if (assignmentKey(assignment.team, assignment.number) === this.liveLocalKey) continue;
+        const position = expectedPlaybookPosition(assignment.steps, elapsedMs);
+        if (!position) continue;
+        this.ghost.lineStyle(2, 0xffffff, 0.65);
+        this.ghost.strokeCircle(position.x, position.y, GHOST_RADIUS);
+        this.ghost.fillStyle(TEAM_COLORS[assignment.team], 0.35);
+        this.ghost.fillCircle(position.x, position.y, GHOST_RADIUS);
+      }
+    }
   }
 
   destroy(): void {

@@ -17,9 +17,12 @@ import type { SportType, TeamId } from '../config/constants';
 import { BotSwarm } from '../dev/Bots';
 import type { Game } from '../game/Game';
 import { GameLoop } from '../game/GameLoop';
+import { minimumPlaybookStepDurationMs } from '../game/PlaybookMath';
 import type { GameSession } from '../game/RenderPlayer';
+import { PlaybookPracticeSession } from '../game/PlaybookPractice';
+import type { PlaybookPracticeResult } from '../game/PlaybookPractice';
 import { InputManager } from '../input/InputManager';
-import { recordCanvasToVideo, downloadBlob } from '../media/PlaybookVideoExport';
+import { recordCanvasToVideo, downloadBlob, videoFileExtension } from '../media/PlaybookVideoExport';
 import { NetworkClient } from '../networking/NetworkClient';
 import { NetworkHost } from '../networking/NetworkHost';
 import type {
@@ -61,6 +64,9 @@ import { PlaybookEditor, teamNumberKey } from '../ui/PlaybookEditor';
 import { PlaybookInstructions } from '../ui/PlaybookInstructions';
 import { PlaybookPane } from '../ui/PlaybookPane';
 import type { PlaybookPaneHandlers } from '../ui/PlaybookPane';
+import { PlaybookPracticeHud } from '../ui/PlaybookPracticeHud';
+import { PlaybookPracticeResultsPane } from '../ui/PlaybookPracticeResultsPane';
+import { PlaybookPracticeSetupPane } from '../ui/PlaybookPracticeSetupPane';
 import { PlaybookResultsPane } from '../ui/PlaybookResultsPane';
 import { PlayerToolsButton } from '../ui/PlayerToolsButton';
 import { PlayerToolsPane } from '../ui/PlayerToolsPane';
@@ -564,7 +570,20 @@ export class App {
     let pendingEnd: { x: number; y: number } | null = null;
     let previewTimer: ReturnType<typeof setTimeout> | null = null;
     let gameInstance: Game | null = null;
+    let practiceSetupPane: PlaybookPracticeSetupPane | null = null;
+    let practiceHud: PlaybookPracticeHud | null = null;
+    let practiceResultsPane: PlaybookPracticeResultsPane | null = null;
+    let practiceSession: PlaybookPracticeSession | null = null;
+    let practiceInput: InputManager | null = null;
+    let practiceFrame: number | null = null;
+    let practiceRecorder: AbortController | null = null;
+    let practiceVideoPromise: Promise<Blob | null> | null = null;
+    let practiceVideo: Blob | null = null;
+    let practiceRecordingError = '';
+    let practiceFinishing = false;
     let currentDraft: PlaybookDraft | null = loadDraft();
+    let editingPlayId: string | null = null;
+    let sport: SportType = currentDraft?.sport ?? DEFAULT_SPORT;
 
     const nextNumberForTeam = (team: TeamId): number | null => {
       const used = new Set(editorPlayers.filter((p) => p.team === team).map((p) => p.number));
@@ -603,6 +622,8 @@ export class App {
         updatedAtMs: Date.now(),
         players: editorPlayers,
         assignments,
+        sport,
+        ...(editingPlayId ? { sourcePlayId: editingPlayId } : {}),
       };
       saveDraft(draft);
       currentDraft = draft;
@@ -630,6 +651,14 @@ export class App {
       gameInstance?.setPlaybookPendingPoints(pendingStart, pendingEnd);
     };
 
+    const updateMinimumStepDuration = (): void => {
+      if (!pendingStart || !pendingEnd) return;
+      playbookEditor?.setMinimumStepDuration(
+        minimumPlaybookStepDurationMs(pendingStart, pendingEnd),
+        true,
+      );
+    };
+
     const resetPending = (prefillStart: { x: number; y: number } | null): void => {
       pendingStage = prefillStart ? 'end' : 'start';
       pendingStart = prefillStart;
@@ -646,6 +675,7 @@ export class App {
         pendingEnd = { x, y };
       }
       refreshPendingUI();
+      updateMinimumStepDuration();
     };
 
     const setPlaybookStage = (stage: PlaybookStepStage): void => {
@@ -703,7 +733,12 @@ export class App {
       }
 
       const startMs = clamp(Math.round(startSeconds * 1000), 0, PLAYBOOK_MAX_DURATION_MS);
-      const durationMs = clamp(Math.round(durationSeconds * 1000), 100, PLAYBOOK_MAX_DURATION_MS);
+      const minimumDurationMs = minimumPlaybookStepDurationMs(pendingStart, pendingEnd);
+      const durationMs = clamp(
+        Math.max(Math.round(durationSeconds * 1000), minimumDurationMs),
+        minimumDurationMs,
+        PLAYBOOK_MAX_DURATION_MS,
+      );
       assignment.steps.push({
         startMs,
         durationMs,
@@ -753,7 +788,13 @@ export class App {
       if (assignments.length === 0) return null;
       const maxEndMs = Math.max(...assignments.flatMap((a) => a.steps.map((s) => s.startMs + s.durationMs)));
       const durationMs = clamp(maxEndMs, DEFAULT_STEP_DURATION_MS, PLAYBOOK_MAX_DURATION_MS);
-      return { id: generatePlayerId(), name: name || 'Untitled Play', durationMs, assignments };
+      return {
+        id: editingPlayId ?? generatePlayerId(),
+        name: name || 'Untitled Play',
+        durationMs,
+        assignments,
+        sport,
+      };
     };
 
     const startPlaybookPreview = (record: boolean): void => {
@@ -791,8 +832,224 @@ export class App {
           playbookEditor?.setStatus('Video export is not supported on this device.');
           return;
         }
-        downloadBlob(blob, `${sanitizeFilename(play.name)}.webm`);
+        downloadBlob(blob, `${sanitizeFilename(play.name)}.${videoFileExtension(blob)}`);
         playbookEditor?.setStatus('Video saved — share it to show friends the play.');
+      });
+    };
+
+    const closePracticeSetup = (): void => {
+      practiceSetupPane?.destroy();
+      practiceSetupPane = null;
+    };
+
+    const releasePracticeControls = (): void => {
+      if (practiceFrame !== null) {
+        cancelAnimationFrame(practiceFrame);
+        practiceFrame = null;
+      }
+      practiceInput?.destroy();
+      practiceInput = null;
+      practiceHud?.destroy();
+      practiceHud = null;
+    };
+
+    const cleanupPractice = (): void => {
+      closePracticeSetup();
+      releasePracticeControls();
+      practiceRecorder?.abort();
+      practiceRecorder = null;
+      practiceResultsPane?.destroy();
+      practiceResultsPane = null;
+      practiceSession?.destroy();
+      practiceSession = null;
+      practiceVideoPromise = null;
+      practiceVideo = null;
+      practiceRecordingError = '';
+      practiceFinishing = false;
+      gameInstance?.setPlaybookLiveView(null, null, null);
+      gameInstance?.setPlaybookLiveStart(null);
+      gameInstance?.setRoster([]);
+      gameInstance?.setPlaybookEditAssignments([]);
+      gameInstance?.setSport(sport);
+      gameInstance?.setBottomInset(0);
+    };
+
+    const cancelPlaybookPractice = (): void => {
+      cleanupPractice();
+      openPlaybookPane();
+    };
+
+    const sharePracticeResult = async (
+      play: Play,
+      result: PlaybookPracticeResult,
+    ): Promise<void> => {
+      if (!practiceResultsPane) return;
+      const pane = practiceResultsPane;
+      const summary = [
+        `Pocket Arena practice: ${play.name}`,
+        `Player: Team ${result.team === 'A' ? 'Blue' : 'Red'} #${result.number}`,
+        `Overall score: ${Math.round(result.overallAccuracyPct)}%`,
+        `Position accuracy: ${Math.round(result.positionAccuracyPct)}%`,
+        `Timing accuracy: ${Math.round(result.timingAccuracyPct)}%`,
+        `Steps reached: ${result.steps.filter((step) => step.actualMs !== null).length}/${result.steps.length}`,
+        ...result.steps.map((step) =>
+          step.actualMs === null
+            ? `Step ${step.stepNumber}: missed ${step.expectedMs}ms target`
+            : `Step ${step.stepNumber}: reached in ${Math.round(step.actualMs)}ms (target ${step.expectedMs}ms)`,
+        ),
+      ].join('\n');
+      pane.setSharing(true);
+      pane.setShareStatus('Preparing your score and video...');
+      try {
+        const video = practiceVideo;
+        if (video && typeof File !== 'undefined' && typeof navigator.share === 'function') {
+          const file = new File(
+            [video],
+            `${sanitizeFilename(play.name)}-practice.${videoFileExtension(video)}`,
+            {
+              type: video.type || 'video/webm',
+            },
+          );
+          if (typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
+            await navigator.share({ title: `Practice: ${play.name}`, text: summary, files: [file] });
+            pane.setShareStatus('Practice video and score shared.');
+            return;
+          }
+        }
+
+        if (video) {
+          downloadBlob(
+            video,
+            `${sanitizeFilename(play.name)}-practice.${videoFileExtension(video)}`,
+          );
+        }
+        if (typeof navigator.share === 'function') {
+          await navigator.share({ title: `Practice: ${play.name}`, text: summary });
+          pane.setShareStatus(video ? 'Video downloaded; score shared.' : 'Score shared.');
+          return;
+        }
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(summary);
+          pane.setShareStatus(
+            video
+              ? 'Video downloaded and score copied to clipboard.'
+              : 'Score copied to clipboard. Video recording is not available on this device.',
+          );
+          return;
+        }
+        pane.setShareStatus(
+          video
+            ? 'Video downloaded. The score is shown above and can be copied manually.'
+            : `${practiceRecordingError || 'Video recording is not available.'} Score is shown above.`,
+        );
+      } catch (error) {
+        pane.setShareStatus(
+          error instanceof DOMException && error.name === 'AbortError'
+            ? 'Sharing was cancelled.'
+            : `Could not share this result: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      } finally {
+        pane.setSharing(false);
+      }
+    };
+
+    const finishPlaybookPractice = async (
+      session: PlaybookPracticeSession,
+      play: Play,
+    ): Promise<void> => {
+      if (practiceFinishing || practiceSession !== session) return;
+      practiceFinishing = true;
+      releasePracticeControls();
+      const result = session.finish();
+      const recordingPromise = practiceVideoPromise;
+      if (recordingPromise) practiceVideo = await recordingPromise;
+      if (practiceSession !== session || !practiceFinishing) return;
+      practiceRecorder = null;
+      practiceResultsPane = new PlaybookPracticeResultsPane(this.uiRoot, play, result, {
+        onShare: () => void sharePracticeResult(play, result),
+        onClose: () => {
+          cleanupPractice();
+          openPlaybookPane();
+        },
+      });
+      if (!practiceVideo) {
+        practiceResultsPane.setShareStatus(
+          practiceRecordingError || 'Video recording is not supported on this device; your score is still available.',
+        );
+      }
+    };
+
+    const startPlaybookPractice = (play: Play, assignment: PlaybookAssignment): void => {
+      closePracticeSetup();
+      closePlaybookPane();
+      closePlaybookEditor();
+      const startAtMs = performance.now();
+      const session = new PlaybookPracticeSession(play, assignment, startAtMs);
+      practiceSession = session;
+      practiceFinishing = false;
+      practiceVideo = null;
+      practiceRecordingError = '';
+      practiceInput = InputManager.create(this.uiRoot);
+
+      gameInstance?.setSport(play.sport ?? DEFAULT_SPORT);
+      gameInstance?.setRoster([
+        { playerId: session.localPlayerId, team: assignment.team, number: assignment.number },
+      ]);
+      gameInstance?.setPlaybookEditAssignments([]);
+      gameInstance?.setPlaybookEditPlayers([]);
+      gameInstance?.setPlaybookLiveView(play, assignment.team, assignment.number, true);
+      gameInstance?.setPlaybookLiveStart(startAtMs);
+
+      practiceHud = new PlaybookPracticeHud(
+        this.uiRoot,
+        play.name,
+        `#${assignment.number}`,
+        cancelPlaybookPractice,
+      );
+
+      const canvas = gameInstance?.canvasElement;
+      if (canvas) {
+        practiceRecorder = new AbortController();
+        practiceVideoPromise = recordCanvasToVideo(
+          canvas,
+          play.durationMs + PLAYBOOK_EXPORT_TAIL_MS,
+          PLAYBOOK_EXPORT_FPS,
+          practiceRecorder.signal,
+        ).catch((error: unknown) => {
+          practiceRecordingError = `Video recording failed: ${error instanceof Error ? error.message : String(error)}`;
+          return null;
+        });
+      } else {
+        practiceRecordingError = 'Video recording is not available on this device.';
+      }
+
+      let lastFrameMs = startAtMs;
+      const runFrame = (nowMs: number): void => {
+        if (practiceSession !== session || practiceFinishing) return;
+        const elapsedMs = nowMs - startAtMs;
+        const dtSeconds = Math.min(Math.max(0, nowMs - lastFrameMs), Math.max(0, play.durationMs - elapsedMs)) / 1000;
+        session.submitInput(practiceInput?.read() ?? { x: 0, y: 0 }, dtSeconds);
+        lastFrameMs = nowMs;
+        practiceHud?.setElapsed(elapsedMs);
+        if (elapsedMs >= play.durationMs) {
+          void finishPlaybookPractice(session, play);
+          return;
+        }
+        practiceFrame = requestAnimationFrame(runFrame);
+      };
+      practiceFrame = requestAnimationFrame(runFrame);
+    };
+
+    const openPracticeSetup = (play: Play): void => {
+      closePlaybookPane();
+      closePracticeSetup();
+      gameInstance?.setSport(play.sport ?? DEFAULT_SPORT);
+      practiceSetupPane = new PlaybookPracticeSetupPane(this.uiRoot, play, {
+        onStart: (assignment) => startPlaybookPractice(play, assignment),
+        onCancel: () => {
+          gameInstance?.setSport(sport);
+          openPlaybookPane();
+        },
       });
     };
 
@@ -829,6 +1086,8 @@ export class App {
     const openPlaybookEditor = (initialDraft?: PlaybookDraft): void => {
       closePlaybookPane();
       closePlaybookEditor();
+      editingPlayId = initialDraft?.sourcePlayId ?? null;
+      sport = initialDraft?.sport ?? DEFAULT_SPORT;
       editorPlayers = initialDraft ? initialDraft.players.map((p) => ({ ...p })) : [];
       draftAssignments = new Map(
         initialDraft ? initialDraft.assignments.map((a) => [teamNumberKey(a.team, a.number), a]) : [],
@@ -846,6 +1105,12 @@ export class App {
         onAddStep: addPlaybookStep,
         onUndoStep: undoPlaybookStep,
         onClearPath: clearPlaybookPath,
+        onSportChange: (nextSport) => {
+          sport = nextSport;
+          gameInstance?.setSport(sport);
+          playbookEditor?.setSport(sport);
+          persistDraft();
+        },
         onNameChange: () => persistDraft(),
         onSave: (name) => savePlaybookDraft(name),
         onPreview: () => startPlaybookPreview(false),
@@ -865,6 +1130,8 @@ export class App {
 
       refreshEditorPlayers();
       refreshEditorPaths();
+      gameInstance?.setSport(sport);
+      playbookEditor.setSport(sport);
       playbookEditor.setTimingDefaults(0, DEFAULT_STEP_DURATION_MS / 1000);
       gameInstance?.setPlaybookEditMode(true, null, onPlaybookFieldTap);
     };
@@ -876,7 +1143,12 @@ export class App {
         return;
       }
 
-      playbookLibrary = [play, ...playbookLibrary];
+      const existingIndex = playbookLibrary.findIndex((savedPlay) => savedPlay.id === play.id);
+      if (existingIndex < 0) {
+        playbookLibrary = [play, ...playbookLibrary];
+      } else {
+        playbookLibrary = playbookLibrary.map((savedPlay) => (savedPlay.id === play.id ? play : savedPlay));
+      }
       savePlays(playbookLibrary);
       clearDraft();
       currentDraft = null;
@@ -885,10 +1157,47 @@ export class App {
     };
 
     const openPlaybookPane = (): void => {
+      closePracticeSetup();
       closePlaybookEditor();
       closePlaybookPane();
       const handlers: PlaybookPaneHandlers = {
-        onNew: () => openPlaybookEditor(),
+        onPractice: openPracticeSetup,
+        onNew: () => {
+          if (
+            currentDraft &&
+            !window.confirm('Starting a new play will replace your current autosaved draft. Continue?')
+          ) {
+            return;
+          }
+          if (currentDraft) {
+            clearDraft();
+            currentDraft = null;
+          }
+          openPlaybookEditor();
+        },
+        onLoad: (play) => {
+          if (currentDraft && currentDraft.sourcePlayId !== play.id) {
+            const continueLoading = window.confirm(
+              'Loading this play will replace your current autosaved draft. Continue?',
+            );
+            if (!continueLoading) return;
+          }
+          const loadedDraft: PlaybookDraft = {
+            name: play.name,
+            updatedAtMs: Date.now(),
+            players: play.assignments.map(({ team, number }) => ({ team, number })),
+            assignments: play.assignments.map((assignment) => ({
+              ...assignment,
+              steps: assignment.steps.map((step) => ({ ...step })),
+            })),
+            sport: play.sport ?? DEFAULT_SPORT,
+            sourcePlayId: play.id,
+          };
+          currentDraft = loadedDraft;
+          editingPlayId = play.id;
+          saveDraft(loadedDraft);
+          openPlaybookEditor(loadedDraft);
+        },
         onExport: (play) => exportPlay(play),
         onImport: (file) => {
           void importPlayFromFile(file).then((play) => {
@@ -925,7 +1234,9 @@ export class App {
 
     // Phaser is only pulled in once a game actually starts, so the entry screens paint instantly.
     const { Game: GameClass } = await import('../game/Game');
-    const game = new GameClass(this.gameRoot, { renderPlayers: () => [] });
+    const game = new GameClass(this.gameRoot, {
+      renderPlayers: (nowMs) => practiceSession?.renderPlayers(nowMs) ?? [],
+    });
     gameInstance = game;
 
     const fullscreen = game.isFullscreenSupported
@@ -933,7 +1244,9 @@ export class App {
       : null;
 
     this.teardowns.push(
+      () => cleanupPractice(),
       () => closePlaybookEditor(),
+      () => closePracticeSetup(),
       () => closePlaybookPane(),
       () => fullscreen?.destroy(),
       () => game.destroy(),

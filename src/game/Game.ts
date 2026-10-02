@@ -125,8 +125,13 @@ export class Game {
   }
 
   /** Shows (or, with `play: null`, hides) a launched play's paths for every connected player. */
-  setPlaybookLiveView(play: Play | null, localTeam: TeamId | null, localNumber: number | null): void {
-    this.scene.setPlaybookLiveView(play, localTeam, localNumber);
+  setPlaybookLiveView(
+    play: Play | null,
+    localTeam: TeamId | null,
+    localNumber: number | null,
+    showOtherGhosts = false,
+  ): void {
+    this.scene.setPlaybookLiveView(play, localTeam, localNumber, showOtherGhosts);
   }
 
   /** Local-clock time grading begins; `null` while only the path (not the ghost target) shows. */
@@ -164,4 +169,3 @@ export class Game {
     this.game.destroy(true);
   }
 }
-

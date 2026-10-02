@@ -1,8 +1,19 @@
-import { ARENA_HEIGHT, ARENA_WIDTH } from '../config/constants';
+import { ARENA_HEIGHT, ARENA_WIDTH, PLAYER_SPEED } from '../config/constants';
 import type { TeamId } from '../config/constants';
 import type { PlaybookStep } from '../networking/NetworkProtocol';
 import { clamp, lerp } from '../utils/math';
 import type { Vector2 } from './types';
+
+/** Fastest legal straight-line travel time at the same top speed used by the simulation. */
+export function minimumPlaybookStepDurationMs(
+  from: Vector2,
+  to: Vector2,
+): number {
+  const distancePx = Math.hypot(to.x - from.x, to.y - from.y);
+  // Step times are authored in 0.01s increments; round upward so the displayed value is never
+  // shorter than the travel time implied by PLAYER_SPEED.
+  return Math.max(10, Math.ceil((distancePx / PLAYER_SPEED) * 100) * 10);
+}
 
 /**
  * Where an assignment's player is "supposed" to be at `elapsedMs` since the play started.

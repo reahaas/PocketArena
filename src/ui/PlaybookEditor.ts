@@ -1,11 +1,13 @@
 import {
   MAX_PLAYBOOK_NAME_LENGTH,
   MAX_PLAYBOOK_PLAYERS_PER_TEAM,
+  SPORTS,
   TEAMS,
   TEAM_COLORS,
   TEAM_LABELS,
+  SPORT_LABELS,
 } from '../config/constants';
-import type { TeamId } from '../config/constants';
+import type { SportType, TeamId } from '../config/constants';
 import { button, clear, el } from './dom';
 
 export interface PlaybookEditorPlayer {
@@ -24,6 +26,7 @@ export interface PlaybookEditorHandlers {
   onAddStep: (startSeconds: number, durationSeconds: number) => void;
   onUndoStep: () => void;
   onClearPath: () => void;
+  onSportChange: (sport: SportType) => void;
   /** Fires on every keystroke in the name field — used to keep the autosaved draft's name fresh. */
   onNameChange: (name: string) => void;
   onSave: (name: string) => void;
@@ -57,9 +60,11 @@ export class PlaybookEditor {
   private readonly endReadout: HTMLElement;
   private readonly startTimeInput: HTMLInputElement;
   private readonly durationInput: HTMLInputElement;
+  private readonly minimumDurationReadout: HTMLElement;
   private readonly addStepButton: HTMLButtonElement;
   private readonly statusText: HTMLElement;
   private readonly autosaveNote: HTMLElement;
+  private readonly sportButtons = new Map<SportType, HTMLButtonElement>();
   private readonly resizeObserver: ResizeObserver | null;
   readonly nameInput: HTMLInputElement;
 
@@ -78,6 +83,14 @@ export class PlaybookEditor {
     const helpButton = button('?', 'playbook-help-button', handlers.onHelp);
     const header = el('div', 'playbook-editor-header');
     header.append(this.nameInput, helpButton);
+
+    const sportPicker = el('div', 'playbook-sport-picker');
+    sportPicker.append(el('span', 'playbook-sport-label', 'FIELD'));
+    for (const sport of SPORTS) {
+      const sportButton = button(SPORT_LABELS[sport], 'secondary-button', () => handlers.onSportChange(sport));
+      this.sportButtons.set(sport, sportButton);
+      sportPicker.append(sportButton);
+    }
 
     this.teamRows = { A: el('div', 'playbook-team-row'), B: el('div', 'playbook-team-row') };
     const teamsSection = el('div', 'playbook-teams');
@@ -105,11 +118,12 @@ export class PlaybookEditor {
 
     this.durationInput = document.createElement('input');
     this.durationInput.type = 'number';
-    this.durationInput.min = '0.1';
-    this.durationInput.step = '0.1';
+    this.durationInput.min = '0.01';
+    this.durationInput.step = '0.01';
     this.durationInput.className = 'playbook-time-input';
     const durationField = el('label', 'playbook-field-label', 'Duration (s)');
     durationField.append(this.durationInput);
+    this.minimumDurationReadout = el('span', 'playbook-minimum-duration', '');
 
     this.addStepButton = button('+ Add Step', 'primary-button', () =>
       handlers.onAddStep(
@@ -124,7 +138,7 @@ export class PlaybookEditor {
     const pointRow = el('div', 'playbook-point-row');
     pointRow.append(this.startButton, this.startReadout, this.endButton, this.endReadout);
     const timeRow = el('div', 'playbook-time-row');
-    timeRow.append(startTimeField, durationField, this.addStepButton);
+    timeRow.append(startTimeField, durationField, this.minimumDurationReadout, this.addStepButton);
     const toolRow = el('div', 'playbook-tool-row');
     toolRow.append(
       button('Undo Last Step', 'text-button', handlers.onUndoStep),
@@ -143,7 +157,16 @@ export class PlaybookEditor {
       button('Cancel', 'text-button', handlers.onCancel),
     );
 
-    this.root.append(header, this.autosaveNote, teamsSection, this.summary, this.stepBuilder, this.statusText, footer);
+    this.root.append(
+      header,
+      this.autosaveNote,
+      sportPicker,
+      teamsSection,
+      this.summary,
+      this.stepBuilder,
+      this.statusText,
+      footer,
+    );
     parent.append(this.root);
 
     this.resizeObserver =
@@ -204,7 +227,17 @@ export class PlaybookEditor {
 
   setTimingDefaults(startSeconds: number, durationSeconds: number): void {
     this.startTimeInput.value = startSeconds.toFixed(1);
-    this.durationInput.value = durationSeconds.toFixed(1);
+    this.durationInput.value = durationSeconds.toFixed(2);
+  }
+
+  setMinimumStepDuration(minimumDurationMs: number, resetDuration: boolean): void {
+    const minimumSeconds = minimumDurationMs / 1000;
+    this.durationInput.min = minimumSeconds.toFixed(2);
+    this.minimumDurationReadout.textContent = `Minimum for this distance: ${minimumSeconds.toFixed(2)}s`;
+    const currentDuration = Number.parseFloat(this.durationInput.value);
+    if (resetDuration || !Number.isFinite(currentDuration) || currentDuration < minimumSeconds) {
+      this.durationInput.value = minimumSeconds.toFixed(2);
+    }
   }
 
   setCanAddStep(enabled: boolean): void {
@@ -221,6 +254,12 @@ export class PlaybookEditor {
 
   setAutosaveNote(text: string): void {
     this.autosaveNote.textContent = text;
+  }
+
+  setSport(sport: SportType): void {
+    for (const [key, sportButton] of this.sportButtons) {
+      sportButton.classList.toggle('is-active', key === sport);
+    }
   }
 
   destroy(): void {

@@ -13,6 +13,7 @@ import {
 } from '../config/constants';
 import type { SportType, TeamId } from '../config/constants';
 import type { PlayerState } from '../game/types';
+import { minimumPlaybookStepDurationMs } from '../game/PlaybookMath';
 import { clamp, sanitizeNumber } from '../utils/math';
 
 export type ChannelKind = 'reliable' | 'unreliable';
@@ -69,6 +70,7 @@ export interface Play {
   name: string;
   durationMs: number;
   assignments: PlaybookAssignment[];
+  sport?: SportType;
 }
 
 /**
@@ -81,6 +83,8 @@ export interface PlaybookDraft {
   updatedAtMs: number;
   players: { team: TeamId; number: number }[];
   assignments: PlaybookAssignment[];
+  sport?: SportType;
+  sourcePlayId?: string;
 }
 
 /** Auto-graded outcome for one assignment, broadcast once a run finishes. */
@@ -247,13 +251,27 @@ function parseStep(value: unknown): PlaybookStep | null {
     return null;
   }
 
+  const fromX = sanitizeNumber(value.fromX, Number.NaN);
+  const fromY = sanitizeNumber(value.fromY, Number.NaN);
+  const toX = sanitizeNumber(value.toX, Number.NaN);
+  const toY = sanitizeNumber(value.toY, Number.NaN);
+  if (
+    !Number.isFinite(fromX) ||
+    !Number.isFinite(fromY) ||
+    !Number.isFinite(toX) ||
+    !Number.isFinite(toY) ||
+    durationMs < minimumPlaybookStepDurationMs({ x: fromX, y: fromY }, { x: toX, y: toY })
+  ) {
+    return null;
+  }
+
   return {
     startMs,
     durationMs,
-    fromX: sanitizeNumber(value.fromX),
-    fromY: sanitizeNumber(value.fromY),
-    toX: sanitizeNumber(value.toX),
-    toY: sanitizeNumber(value.toY),
+    fromX,
+    fromY,
+    toX,
+    toY,
   };
 }
 
@@ -302,7 +320,15 @@ export function parsePlay(value: unknown): Play | null {
     assignments.push(assignment);
   }
 
-  return { id: value.id, name: value.name, durationMs, assignments };
+  const sport = value.sport === undefined ? undefined : parseSport(value.sport);
+  if (value.sport !== undefined && !sport) return null;
+  return {
+    id: value.id,
+    name: value.name,
+    durationMs,
+    assignments,
+    ...(sport ? { sport } : {}),
+  };
 }
 
 /** Validates a locally-persisted draft. Lenient vs. `parsePlay`: empty name/steps/players are fine. */
@@ -334,7 +360,22 @@ export function parseDraft(value: unknown): PlaybookDraft | null {
     assignments.push(assignment);
   }
 
-  return { name: value.name, updatedAtMs, players, assignments };
+  const sport = value.sport === undefined ? undefined : parseSport(value.sport);
+  if (value.sport !== undefined && !sport) return null;
+  if (
+    value.sourcePlayId !== undefined &&
+    (typeof value.sourcePlayId !== 'string' || value.sourcePlayId.length === 0 || value.sourcePlayId.length > 64)
+  ) {
+    return null;
+  }
+  return {
+    name: value.name,
+    updatedAtMs,
+    players,
+    assignments,
+    ...(sport ? { sport } : {}),
+    ...(typeof value.sourcePlayId === 'string' ? { sourcePlayId: value.sourcePlayId } : {}),
+  };
 }
 
 function parseGrade(value: unknown): PlaybookGrade | null {
@@ -508,4 +549,3 @@ export function parseHostMessage(value: unknown): HostMessage | null {
       return null;
   }
 }
-

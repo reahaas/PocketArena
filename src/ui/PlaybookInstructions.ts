@@ -4,7 +4,7 @@ const STEPS = [
   'Add players to each team with "+ Add Player" — pick any mix, e.g. 6 vs 6 or 2 vs 0.',
   'Tap a player chip to select them — their name highlights while armed.',
   'Tap the field once to set their Start position, then tap again to set their End position.',
-  'Adjust Start Time and Duration for that movement, then press "Add Step".',
+  'Set the step Start Time. Duration is calculated from the travel distance and cannot be shorter than the game allows; increase it to make the player move more slowly, then press "Add Step".',
   'Repeat for more movements, or arm another player to build out the whole play.',
   'Press Preview to watch it animate, Export Video to save a clip, or Save Play when done.',
 ];

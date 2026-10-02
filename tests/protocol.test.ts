@@ -10,6 +10,7 @@ import {
 import {
   channelFor,
   parseClientMessage,
+  parseDraft,
   parseHostMessage,
   parsePlay,
   type HostMessage,
@@ -240,6 +241,25 @@ describe('playbook message validation', () => {
     expect(parsePlay(play)).toEqual(play);
   });
 
+  it('preserves an optional field type on saved plays while accepting legacy plays', () => {
+    expect(parsePlay({ ...play, sport: 'waterpolo' })).toEqual({ ...play, sport: 'waterpolo' });
+    expect(parsePlay(play)).toEqual(play);
+    expect(parsePlay({ ...play, sport: 'tennis' })).toBeNull();
+  });
+
+  it('round-trips the field type and source play id on an autosaved draft', () => {
+    const draft = {
+      name: play.name,
+      updatedAtMs: 1234,
+      players: [{ team: 'A', number: 7 }],
+      assignments: play.assignments,
+      sport: 'basketball',
+      sourcePlayId: play.id,
+    };
+    expect(parseDraft(draft)).toEqual(draft);
+    expect(parseDraft({ ...draft, sourcePlayId: '' })).toBeNull();
+  });
+
   it('round-trips playbookRun, playbookResult and playbookCancel host messages', () => {
     const messages: HostMessage[] = [
       { type: 'playbookRun', play, serverStartAtMs: 1000, countdownMs: 3000 },
@@ -297,6 +317,31 @@ describe('playbook message validation', () => {
     expect(parsePlay(bad1)).toBeNull();
     expect(parsePlay(bad2)).toBeNull();
     expect(parsePlay(bad3)).toBeNull();
+  });
+
+  it('rejects a step duration shorter than the distance requires at game speed', () => {
+    const tooFast = {
+      ...play,
+      assignments: [
+        {
+          team: 'A',
+          number: 7,
+          steps: [{ startMs: 0, durationMs: 990, fromX: 0, fromY: 0, toX: 320, toY: 0 }],
+        },
+      ],
+    };
+    const justEnough = {
+      ...tooFast,
+      assignments: [
+        {
+          team: 'A',
+          number: 7,
+          steps: [{ startMs: 0, durationMs: 1000, fromX: 0, fromY: 0, toX: 320, toY: 0 }],
+        },
+      ],
+    };
+    expect(parsePlay(tooFast)).toBeNull();
+    expect(parsePlay(justEnough)).not.toBeNull();
   });
 
   it('rejects an assignment with an unknown team or out-of-range number', () => {

@@ -41,6 +41,7 @@ export class GameScene extends Phaser.Scene {
     play: Play | null;
     localTeam: TeamId | null;
     localNumber: number | null;
+    showOtherGhosts: boolean;
   } | null = null;
   private pendingPlaybookStart: number | null = null;
   private pendingPlaybookPreview: { play: Play | null; startAtLocalMs: number | null } | null = null;
@@ -106,9 +107,14 @@ export class GameScene extends Phaser.Scene {
     this.playbookLayer?.setPendingPoints(start, end);
   }
 
-  setPlaybookLiveView(play: Play | null, localTeam: TeamId | null, localNumber: number | null): void {
-    this.pendingPlaybookLive = { play, localTeam, localNumber };
-    this.playbookLayer?.setLiveView(play, localTeam, localNumber);
+  setPlaybookLiveView(
+    play: Play | null,
+    localTeam: TeamId | null,
+    localNumber: number | null,
+    showOtherGhosts = false,
+  ): void {
+    this.pendingPlaybookLive = { play, localTeam, localNumber, showOtherGhosts };
+    this.playbookLayer?.setLiveView(play, localTeam, localNumber, showOtherGhosts);
   }
 
   setPlaybookLiveStart(startAtLocalMs: number | null): void {
@@ -151,6 +157,7 @@ export class GameScene extends Phaser.Scene {
         this.pendingPlaybookLive.play,
         this.pendingPlaybookLive.localTeam,
         this.pendingPlaybookLive.localNumber,
+        this.pendingPlaybookLive.showOtherGhosts,
       );
     }
     this.playbookLayer.setLiveStart(this.pendingPlaybookStart);
@@ -174,4 +181,3 @@ export class GameScene extends Phaser.Scene {
     this.playbookLayer?.update(now);
   }
 }
-

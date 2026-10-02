@@ -13,7 +13,9 @@ export interface PlaybookPaneHandlers {
   onNew?: () => void;
   /** Omitted in the offline studio — hides "Run" on every row, since there's no room to run against. */
   onRun?: (play: Play) => void;
+  onPractice?: (play: Play) => void;
   onExport: (play: Play) => void;
+  onLoad?: (play: Play) => void;
   onImport: (file: File) => void;
   onDelete: (play: Play) => void;
   onClose: () => void;
@@ -103,9 +105,17 @@ export class PlaybookPane {
         ),
       );
       const rowActions = el('div', 'playbook-row-actions');
+      if (this.handlers.onPractice && play.assignments.some((assignment) => assignment.steps.length > 0)) {
+        const onPractice = this.handlers.onPractice;
+        rowActions.append(button('Practice', 'primary-button', () => onPractice(play)));
+      }
       if (this.handlers.onRun) {
         const onRun = this.handlers.onRun;
         rowActions.append(button('Run', 'primary-button', () => onRun(play)));
+      }
+      if (this.handlers.onLoad) {
+        const onLoad = this.handlers.onLoad;
+        rowActions.append(button('Load', 'primary-button', () => onLoad(play)));
       }
       rowActions.append(
         button('Export', 'text-button', () => this.handlers.onExport(play)),

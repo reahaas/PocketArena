@@ -470,9 +470,118 @@ body {
 
 .playbook-pane,
 .playbook-results,
-.playbook-instructions {
+.playbook-instructions,
+.playbook-practice-setup {
   max-height: 85vh;
   overflow-y: auto;
+}
+
+.playbook-practice-setup {
+  z-index: 5;
+}
+
+.playbook-practice-select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0.6rem;
+  border: 1px solid #334155;
+  border-radius: 0.5rem;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+
+.playbook-practice-hud {
+  position: absolute;
+  top: calc(0.75rem + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  max-width: calc(100vw - 1.5rem);
+  padding: 0.5rem 0.65rem;
+  border: 1px solid #334155;
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  z-index: 3;
+}
+
+.playbook-practice-title {
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.playbook-practice-timer {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.playbook-practice-hud .text-button {
+  min-height: 34px;
+  padding: 0 0.65rem;
+}
+
+.playbook-practice-results {
+  z-index: 5;
+}
+
+.playbook-practice-score-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.playbook-practice-score-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.65rem 0.35rem;
+  border: 1px solid #1e293b;
+  border-radius: 0.65rem;
+  background: rgba(15, 23, 42, 0.7);
+}
+
+.playbook-practice-score-label {
+  color: var(--muted);
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.playbook-practice-score-value {
+  color: var(--accent);
+  font-size: 1.35rem;
+}
+
+.playbook-practice-section-title {
+  align-self: flex-start;
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.playbook-practice-share-status {
+  min-height: 1em;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.playbook-practice-results .playbook-list {
+  max-height: 24vh;
+}
+
+@media (max-width: 560px) {
+  .playbook-practice-hud {
+    gap: 0.4rem;
+  }
+
+  .playbook-practice-title {
+    max-width: 42vw;
+  }
 }
 
 .playbook-list {
@@ -533,6 +642,12 @@ body {
   font-size: 0.75rem;
 }
 
+.playbook-minimum-duration {
+  align-self: center;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
 .playbook-file-input {
   display: none;
 }
@@ -576,6 +691,26 @@ body {
   min-height: 1em;
   font-size: 0.75rem;
   color: var(--muted);
+}
+
+.playbook-sport-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.playbook-sport-label {
+  margin-right: 0.25rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.playbook-sport-picker .secondary-button {
+  min-height: 34px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.75rem;
 }
 
 .playbook-help-button {
@@ -781,4 +916,3 @@ body {
   font-weight: 800;
   color: var(--accent);
 }
-
