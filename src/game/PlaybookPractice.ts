@@ -57,6 +57,7 @@ export class PlaybookPracticeSession implements GameSession {
 
   submitInput(input: Vector2, dtSeconds: number): void {
     if (this.result) return;
+    if (this.now() < this.startAtMs) return;
     this.simulation.step(this.localPlayerId, input, dtSeconds);
     this.sample(this.now());
   }

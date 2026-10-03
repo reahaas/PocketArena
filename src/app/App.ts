@@ -19,6 +19,7 @@ import type { Game } from '../game/Game';
 import { GameLoop } from '../game/GameLoop';
 import { minimumPlaybookStepDurationMs } from '../game/PlaybookMath';
 import type { GameSession } from '../game/RenderPlayer';
+import { PLAYBOOK_PRACTICE_COUNTDOWN_MS, PLAYBOOK_PRACTICE_GRACE_MS } from '../config/constants';
 import { PlaybookPracticeSession } from '../game/PlaybookPractice';
 import type { PlaybookPracticeResult } from '../game/PlaybookPractice';
 import { InputManager } from '../input/InputManager';
@@ -983,7 +984,8 @@ export class App {
       closePracticeSetup();
       closePlaybookPane();
       closePlaybookEditor();
-      const startAtMs = performance.now();
+      const startAtMs = performance.now() + PLAYBOOK_PRACTICE_COUNTDOWN_MS;
+      const endMs = play.durationMs + PLAYBOOK_PRACTICE_GRACE_MS;
       const session = new PlaybookPracticeSession(play, assignment, startAtMs);
       practiceSession = session;
       practiceFinishing = false;
@@ -1012,7 +1014,7 @@ export class App {
         practiceRecorder = new AbortController();
         practiceVideoPromise = recordCanvasToVideo(
           canvas,
-          play.durationMs + PLAYBOOK_EXPORT_TAIL_MS,
+          PLAYBOOK_PRACTICE_COUNTDOWN_MS + endMs + PLAYBOOK_EXPORT_TAIL_MS,
           PLAYBOOK_EXPORT_FPS,
           practiceRecorder.signal,
         ).catch((error: unknown) => {
@@ -1023,15 +1025,15 @@ export class App {
         practiceRecordingError = 'Video recording is not available on this device.';
       }
 
-      let lastFrameMs = startAtMs;
+      let lastFrameMs = performance.now();
       const runFrame = (nowMs: number): void => {
         if (practiceSession !== session || practiceFinishing) return;
         const elapsedMs = nowMs - startAtMs;
-        const dtSeconds = Math.min(Math.max(0, nowMs - lastFrameMs), Math.max(0, play.durationMs - elapsedMs)) / 1000;
+        const dtSeconds = Math.min(Math.max(0, nowMs - lastFrameMs), Math.max(0, endMs - elapsedMs)) / 1000;
         session.submitInput(practiceInput?.read() ?? { x: 0, y: 0 }, dtSeconds);
         lastFrameMs = nowMs;
         practiceHud?.setElapsed(elapsedMs);
-        if (elapsedMs >= play.durationMs) {
+        if (elapsedMs >= endMs) {
           void finishPlaybookPractice(session, play);
           return;
         }

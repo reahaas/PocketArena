@@ -38,11 +38,12 @@ test('lets a player practice one role while the other playbook roles run as ghos
   await page.getByRole('button', { name: 'Start Practice' }).click();
 
   await expect(page.locator('.joystick-zone')).toBeAttached();
+  await expect(page.locator('.playbook-practice-countdown')).toHaveText('GO!', { timeout: 5_000 });
   await page.keyboard.down('ArrowLeft');
   await page.waitForTimeout(450);
   await page.keyboard.up('ArrowLeft');
   await expect(page.getByRole('heading', { name: 'PRACTICE RESULTS: SOLO PRACTICE' })).toBeVisible({
-    timeout: 10_000,
+    timeout: 15_000,
   });
   await expect(page.getByText('OVERALL', { exact: true })).toBeVisible();
   await expect(page.getByText('POSITION', { exact: true })).toBeVisible();

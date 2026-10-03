@@ -916,3 +916,15 @@ body {
   font-weight: 800;
   color: var(--accent);
 }
+
+.playbook-practice-countdown {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  font-size: 25vmin;
+  font-weight: 800;
+  color: #facc15;
+  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.7);
+}

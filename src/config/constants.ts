@@ -113,3 +113,6 @@ export const DEFAULT_STEP_DURATION_MS = 500;
 export const PLAYBOOK_EXPORT_FPS = 24;
 /** Extra time recorded after the last step finishes, so the final position holds briefly. */
 export const PLAYBOOK_EXPORT_TAIL_MS = 1_200;
+
+export const PLAYBOOK_PRACTICE_COUNTDOWN_MS = 3_000;
+export const PLAYBOOK_PRACTICE_GRACE_MS = 2_000;

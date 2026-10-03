@@ -145,8 +145,7 @@ export class PlaybookLayer {
     const mine = this.livePlay.assignments.find(
       (a) => assignmentKey(a.team, a.number) === this.liveLocalKey,
     );
-    const elapsedMs = nowMs - this.liveStartAtLocalMs;
-    if (elapsedMs < 0) return;
+    const elapsedMs = Math.max(0, nowMs - this.liveStartAtLocalMs);
 
     if (mine) {
       const position = expectedPlaybookPosition(mine.steps, elapsedMs);
