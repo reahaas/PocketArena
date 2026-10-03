@@ -238,3 +238,8 @@ cloudflared tunnel --url http://localhost:5173
 [`plan/`](plan) holds the phased implementation plan and, in
 [`plan/decisions.md`](plan/decisions.md), the deviations from the original specification along with
 the reasoning behind each one.
+
+## Working with AI agents
+
+This repo is agent-developed. Start with [AGENTS.md](AGENTS.md) (rules, commands, skills), then [docs/](docs/) for architecture, playbook behavior and gotchas.
+
