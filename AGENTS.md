@@ -51,7 +51,8 @@ Do not run e2e against the default port 8787 unless `dist/` was just built (stal
 - `verify-change`: the validation gate and how to debug failures.
 - `add-playbook-feature`: touch-points checklist for playbook work.
 - `add-network-message`: adding/validating a protocol message safely.
-- `ship-change`: commit, push, confirm CI/deploy.
+- `ship-change`: commit and push.
+- `deploy`: GitHub Pages + Render release, verification, first-time setup, troubleshooting.
 
 ## Knowledge (`docs/`)
 
